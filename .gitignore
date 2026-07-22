@@ -29,6 +29,9 @@ config.local.yaml
 # Internal design spec — kept local, not published
 otgate-SPEC.md
 
+# Article drafts — kept local, published to Habr manually
+article/
+
 # IDE / OS
 .idea/
 .vscode/
