@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "otgate"
+version = "0.1.0"
+description = "OT-aware authorization gateway between an LLM agent and an industrial OPC UA server."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "otgate contributors" }]
+keywords = ["opc-ua", "mcp", "llm", "ot-security", "industrial", "guardrails"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+dependencies = [
+    "mcp>=1.2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Real OPC UA backend. Not needed for FakeBackend, tests or the demo.
+opcua = ["asyncua>=1.0"]
+# Development / testing. httpx powers Starlette's TestClient for the HTTP tests.
+dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[project.scripts]
+otgate = "otgate.server:main"
+otgate-http = "otgate.server:main_http"
+
+[project.urls]
+Homepage = "https://github.com/alikup-ai/otgate"
+Repository = "https://github.com/alikup-ai/otgate"
+
+[tool.hatch.build.targets.wheel]
+packages = ["otgate"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Make the repo root and the tests dir importable so tests can `import otgate`
+# and `import conftest` regardless of the working directory.
+pythonpath = [".", "tests"]
+markers = [
+    "integration: end-to-end tests against a real asyncua OPC UA server (needs the 'asyncua' extra)",
+]

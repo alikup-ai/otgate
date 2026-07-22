@@ -1,0 +1,23 @@
+# Policy for an optimisation agent.
+# It may turn the temperature setpoint (under approval, within range/rate, and
+# not while ESD is active) and read the rest — same rights as the standalone
+# examples/reactor_policy.yaml.
+
+- tag: "ns=2;s=Reactor.TIC101.PV"
+  access: read
+
+- tag: "ns=2;s=Reactor.TIC101.SP"
+  access: write_with_approval
+  value_range: [40, 80]
+  max_rate: 5
+  rate_interval: 60
+  interlocks:
+    - tag: "ns=2;s=Reactor.ESD"
+      condition: "== true"
+      action: deny
+
+- tag: "ns=2;s=Reactor.PIC201.PV"
+  access: read
+
+- tag: "ns=2;s=Reactor.ESD"
+  access: read

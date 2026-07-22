@@ -1,0 +1,17 @@
+# Multi-agent configuration: each agent gets its own token and its own policy.
+#
+# Run with:
+#   OTGATE_AGENTS=examples/agents.yaml \
+#   OTGATE_OPERATOR_TOKEN=<operator secret> \
+#   otgate-http
+#
+# Tokens here are placeholders — generate real ones (e.g. `openssl rand -hex 32`)
+# and keep this file out of version control in a real deployment.
+
+- id: diagnostics
+  token: "REPLACE-ME-diagnostics-token"
+  policy: policies/diagnostics.yaml     # read-only
+
+- id: optimizer
+  token: "REPLACE-ME-optimizer-token"
+  policy: policies/optimizer.yaml       # may write the setpoint (with approval)

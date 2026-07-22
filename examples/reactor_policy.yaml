@@ -1,0 +1,31 @@
+# Example otgate policy for a small reactor (FakeBackend tag set).
+#
+# Rules are evaluated per tag. Any tag NOT listed here is denied by default.
+# See otgate/policy.py for the full validation rules.
+
+# Reactor temperature — process value. Read-only: an agent may observe it but
+# never command it directly.
+- tag: "ns=2;s=Reactor.TIC101.PV"
+  access: read
+
+# Reactor temperature — setpoint. This is the one knob the agent may turn, and
+# only under supervision: writes require human approval (ASK), must stay within
+# 40..80 degC, may not move faster than 5 degC per minute, and are blocked while
+# the emergency shutdown (ESD) is active.
+- tag: "ns=2;s=Reactor.TIC101.SP"
+  access: write_with_approval
+  value_range: [40, 80]
+  max_rate: 5
+  rate_interval: 60
+  interlocks:
+    - tag: "ns=2;s=Reactor.ESD"
+      condition: "== true"
+      action: deny
+
+# Reactor pressure — process value. Read-only.
+- tag: "ns=2;s=Reactor.PIC201.PV"
+  access: read
+
+# Emergency shutdown flag. Read-only: the agent may check it but never set it.
+- tag: "ns=2;s=Reactor.ESD"
+  access: read

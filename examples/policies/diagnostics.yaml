@@ -1,0 +1,14 @@
+# Policy for a read-only diagnostics agent.
+# It may observe the reactor but command nothing — every tag is read.
+
+- tag: "ns=2;s=Reactor.TIC101.PV"
+  access: read
+
+- tag: "ns=2;s=Reactor.TIC101.SP"
+  access: read
+
+- tag: "ns=2;s=Reactor.PIC201.PV"
+  access: read
+
+- tag: "ns=2;s=Reactor.ESD"
+  access: read
