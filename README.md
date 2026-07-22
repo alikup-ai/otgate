@@ -6,6 +6,10 @@ An OT-aware authorization gateway that sits between an LLM agent and an industri
 
 [Русская версия →](README.ru.md)
 
+<p align="center">
+  <img src="assets/demo.svg" alt="otgate demo: an LLM agent's writes to a reactor gated by policy — ALLOW, ASK, DENY with reasons" width="100%">
+</p>
+
 ```
 [MCP client / agent] ---MCP---> [otgate] ---OPC UA---> [OPC UA server]
                                     |

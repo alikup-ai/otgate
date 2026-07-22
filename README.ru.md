@@ -6,6 +6,10 @@ OT-aware шлюз авторизации между LLM-агентом и про
 
 [English version →](README.md)
 
+<p align="center">
+  <img src="assets/demo.svg" alt="демо otgate: записи LLM-агента в реактор, отфильтрованные политикой — ALLOW, ASK, DENY с причинами" width="100%">
+</p>
+
 ```
 [MCP-клиент / агент] ---MCP---> [otgate] ---OPC UA---> [OPC UA сервер]
                                     |
