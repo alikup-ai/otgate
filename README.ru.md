@@ -109,7 +109,7 @@ python -m otgate.server     # эквивалент
 | `OTGATE_OPERATOR_TOKEN` | — | bearer-токен для operator HTTP-канала (должен отличаться от всех agent-токенов) |
 | `OTGATE_HOST` / `OTGATE_AGENT_PORT` / `OTGATE_OPERATOR_PORT` | `127.0.0.1` / `8770` / `8771` | host и порты HTTP |
 
-Пример конфига MCP для Claude Desktop / Claude Code (FakeBackend):
+Пример конфига MCP-клиента (FakeBackend):
 
 ```json
 {

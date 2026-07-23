@@ -109,7 +109,7 @@ Configuration is via environment variables (so the backend switches without code
 | `OTGATE_OPERATOR_TOKEN` | — | bearer token for the operator HTTP channel (must differ from every agent token) |
 | `OTGATE_HOST` / `OTGATE_AGENT_PORT` / `OTGATE_OPERATOR_PORT` | `127.0.0.1` / `8770` / `8771` | HTTP bind host and ports |
 
-Example Claude Desktop / Claude Code MCP config (FakeBackend):
+Example MCP client config (FakeBackend):
 
 ```json
 {
