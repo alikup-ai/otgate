@@ -29,6 +29,7 @@ async def test_write_in_range_reaches_approval(policy, backend):
     assert d.type is DecisionType.ASK
 
 
+@pytest.mark.asi02
 async def test_write_out_of_range_denied(policy, backend):
     eng = PolicyEngine(policy, backend)
     d = await eng.evaluate(Action(ActionType.WRITE, SP, 200.0))
@@ -36,6 +37,7 @@ async def test_write_out_of_range_denied(policy, backend):
     assert "range" in d.reason
 
 
+@pytest.mark.asi02
 async def test_write_below_range_denied(policy, backend):
     eng = PolicyEngine(policy, backend)
     d = await eng.evaluate(Action(ActionType.WRITE, SP, 10.0))
@@ -43,6 +45,7 @@ async def test_write_below_range_denied(policy, backend):
     assert "range" in d.reason
 
 
+@pytest.mark.asi02
 async def test_interlock_active_denied(policy, backend):
     backend.set(ESD, True)
     eng = PolicyEngine(policy, backend)
@@ -58,6 +61,7 @@ async def test_interlock_inactive_does_not_block(policy, backend):
     assert d.type is DecisionType.ASK  # only blocked by approval, not interlock
 
 
+@pytest.mark.asi02
 async def test_max_rate_exceeded_denied(policy, backend):
     clock = ManualClock()
     eng = PolicyEngine(policy, backend, clock=clock)
@@ -107,6 +111,7 @@ async def test_write_readonly_tag_denied(policy, backend):
     assert "read-only" in d.reason
 
 
+@pytest.mark.asi02
 async def test_write_tag_not_in_policy_denied(policy, backend):
     eng = PolicyEngine(policy, backend)
     d = await eng.evaluate(Action(ActionType.WRITE, "ns=2;s=Unknown", 1.0))

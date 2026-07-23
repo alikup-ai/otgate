@@ -49,4 +49,5 @@ testpaths = ["tests"]
 pythonpath = [".", "tests"]
 markers = [
     "integration: end-to-end tests against a real asyncua OPC UA server (needs the 'asyncua' extra)",
+    "asi02: evidence for OWASP ASI02 (Tool Misuse & Exploitation) — see docs/threat-model.md",
 ]

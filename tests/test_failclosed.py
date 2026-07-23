@@ -69,6 +69,7 @@ async def test_write_fails_closed_when_backend_down(tmp_path):
         g.close()
 
 
+@pytest.mark.asi02
 async def test_unverifiable_interlock_fails_closed(gw):
     """A write whose interlock cannot be read (backend down) is DENIED, not run."""
     gw._backend.set_down(True)

@@ -73,6 +73,7 @@ def test_jsonl_missing_file_is_empty(tmp_path):
 
 # --- engine-level: the actual security property ---
 
+@pytest.mark.asi02
 async def test_rate_limit_survives_restart(policy, backend, tmp_path):
     """After a restart, a too-fast write is still DENIED — the gap is closed."""
     path = tmp_path / "rate.jsonl"

@@ -26,6 +26,30 @@ otgate is itself an MCP server. The agent connects to it as if it were an ordina
 
 It is not "you may write to this tag" but "you may write *within range X, no faster than Y over interval Z, and only while the emergency tag W is not active*".
 
+## Where this fits: OWASP ASI02
+
+In the [OWASP Top 10 for Agentic Applications](https://genai.owasp.org/), the
+risk otgate targets is **ASI02 — Tool Misuse & Exploitation**: an agent that
+stays inside its granted privileges but uses a legitimate tool unsafely —
+parameter pollution, excessive execution, or a call that is only dangerous given
+the current system state.
+
+Identity and access layers (ASI03) answer *may this agent call this tool*. They
+do not look at **what** it writes, **how fast**, or **under which conditions**.
+otgate is the layer that does:
+
+| ASI02 sub-mechanism | otgate |
+| --- | --- |
+| Parameter pollution | `value_range` — the argument itself is checked |
+| Excessive execution / scale | `max_rate` over `rate_interval`, durable across restarts |
+| Unsafe given system state | `interlocks` — reads live guard tags before allowing |
+| Unverifiable safety condition | fails **closed** — denies rather than guesses |
+
+A full mapping against all ten OWASP agentic risks — including what otgate
+explicitly does **not** cover (tool-chain manipulation, goal hijacking, memory
+poisoning, rogue-agent detection) — is in
+**[docs/threat-model.md](docs/threat-model.md)**.
+
 ## Install
 
 ```bash
@@ -293,6 +317,7 @@ survives a process crash) but not `fsync`'d per line — a stricter mode is a TO
 ```bash
 pytest -m "not integration"   # unit tests — no OPC UA dependency (the default promise)
 pytest -m integration         # end-to-end against a real asyncua server (needs the opcua extra)
+pytest -m asi02               # just the OWASP ASI02 evidence (see docs/threat-model.md)
 pytest                         # everything
 ```
 
