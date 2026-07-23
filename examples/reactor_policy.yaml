@@ -12,11 +12,21 @@
 # only under supervision: writes require human approval (ASK), must stay within
 # 40..80 degC, may not move faster than 5 degC per minute, and are blocked while
 # the emergency shutdown (ESD) is active.
+#
+# The cumulative limits bound a *series* of writes. Without them an agent can
+# walk around max_rate by taking many small legal steps: +4.9 degC, wait a
+# minute, +4.9 again — and drift the setpoint arbitrarily far. cumulative_range
+# caps the total drift from where the setpoint stood an hour ago, and max_calls
+# caps how often it may be touched at all.
 - tag: "ns=2;s=Reactor.TIC101.SP"
   access: write_with_approval
   value_range: [40, 80]
   max_rate: 5
   rate_interval: 60
+  cumulative_range: [-10, 10]   # no more than 10 degC total drift ...
+  cumulative_interval: 3600     # ... from the value one hour ago
+  max_calls: 20                 # at most 20 setpoint writes ...
+  calls_interval: 3600          # ... per hour
   interlocks:
     - tag: "ns=2;s=Reactor.ESD"
       condition: "== true"

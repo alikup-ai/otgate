@@ -43,7 +43,21 @@ otgate is the layer that does:
 | Parameter pollution | `value_range` — the argument itself is checked |
 | Excessive execution / scale | `max_rate` over `rate_interval`, durable across restarts |
 | Unsafe given system state | `interlocks` — reads live guard tags before allowing |
+| Unsafe composition (salami attack) | `cumulative_range` — bounds total drift over a window, so slicing a forbidden move into legal steps does not work |
+| Recursion / call storms | `max_calls` over `calls_interval` |
 | Unverifiable safety condition | fails **closed** — denies rather than guesses |
+
+Per-step limits judge one write; cumulative limits judge a *series*. Without the
+latter an agent walks around `max_rate` with many small legal steps:
+
+```
+step 1: 50.0 -> 52.5  (drift  +2.5)  ALLOW
+step 2: 52.5 -> 55.0  (drift    +5)  ALLOW
+step 3: 55.0 -> 57.5  (drift  +7.5)  ALLOW
+step 4: 57.5 -> 60.0  (drift   +10)  ALLOW
+step 5: 60.0 -> 62.5  (drift +12.5)  DENY  cumulative drift too large:
+                                           62.5 is +12.5 from 50, allowed [-10, 10]
+```
 
 A full mapping against all ten OWASP agentic risks — including what otgate
 explicitly does **not** cover (tool-chain manipulation, goal hijacking, memory
@@ -72,6 +86,8 @@ A policy is a YAML list of per-tag rules. Any tag **not** listed is denied by de
 - tag: "ns=2;s=Reactor.TIC101.SP"     # temperature setpoint
   access: write_with_approval          # writes need human approval (ASK)
   value_range: [40, 80]                # only within 40..80 degC
+  cumulative_range: [-10, 10]          # ... and no more than 10 degC total drift
+  cumulative_interval: 3600            #     from where it stood an hour ago
   max_rate: 5                          # no faster than 5 degC ...
   rate_interval: 60                    # ... per 60 seconds
   interlocks:

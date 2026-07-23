@@ -87,6 +87,10 @@ _ALLOWED_RULE_KEYS = {
     "max_rate",
     "rate_interval",
     "interlocks",
+    "cumulative_range",
+    "cumulative_interval",
+    "max_calls",
+    "calls_interval",
 }
 _ALLOWED_INTERLOCK_KEYS = {"tag", "condition", "action"}
 
@@ -123,6 +127,12 @@ def _parse_rule(item: object, index: int) -> Rule:
         item.get("max_rate"), item.get("rate_interval"), where
     )
     interlocks = _parse_interlocks(item.get("interlocks"), where)
+    cumulative_range, cumulative_interval = _parse_cumulative(
+        item.get("cumulative_range"), item.get("cumulative_interval"), where
+    )
+    max_calls, calls_interval = _parse_max_calls(
+        item.get("max_calls"), item.get("calls_interval"), where
+    )
 
     return Rule(
         tag=tag,
@@ -130,6 +140,10 @@ def _parse_rule(item: object, index: int) -> Rule:
         value_range=value_range,
         max_rate=max_rate,
         rate_interval=rate_interval,
+        cumulative_range=cumulative_range,
+        cumulative_interval=cumulative_interval,
+        max_calls=max_calls,
+        calls_interval=calls_interval,
         interlocks=interlocks,
     )
 
@@ -175,6 +189,82 @@ def _parse_rate(
         raise PolicyError(f"{where}: 'rate_interval' must be positive, got {rate_interval}")
 
     return max_rate, rate_interval
+
+
+def _parse_cumulative(
+    range_raw: object, interval_raw: object, where: str
+) -> tuple[tuple[float, float] | None, float | None]:
+    """Parse ``cumulative_range`` / ``cumulative_interval``.
+
+    The range is a drift allowance relative to where the tag started the window,
+    so its bounds are offsets and the lower one is normally negative.
+    """
+    if range_raw is None:
+        if interval_raw is not None:
+            raise PolicyError(
+                f"{where}: 'cumulative_interval' set without 'cumulative_range' "
+                "(has no effect)"
+            )
+        return None, None
+
+    if not isinstance(range_raw, (list, tuple)) or len(range_raw) != 2:
+        raise PolicyError(
+            f"{where}: 'cumulative_range' must be a list of exactly two numbers"
+        )
+    lo, hi = range_raw
+    if isinstance(lo, bool) or isinstance(hi, bool) or not _is_number(lo) or not _is_number(hi):
+        raise PolicyError(f"{where}: 'cumulative_range' bounds must be numbers")
+    lo, hi = float(lo), float(hi)
+    if lo > hi:
+        raise PolicyError(
+            f"{where}: 'cumulative_range' lower bound {lo} is greater than upper bound {hi}"
+        )
+    if lo > 0 or hi < 0:
+        raise PolicyError(
+            f"{where}: 'cumulative_range' must include 0 (it is drift allowed "
+            f"from the window's starting value), got [{lo}, {hi}]"
+        )
+
+    if interval_raw is None:
+        raise PolicyError(
+            f"{where}: 'cumulative_range' requires 'cumulative_interval' (seconds)"
+        )
+    if isinstance(interval_raw, bool) or not _is_number(interval_raw):
+        raise PolicyError(f"{where}: 'cumulative_interval' must be a number")
+    interval = float(interval_raw)
+    if interval <= 0:
+        raise PolicyError(
+            f"{where}: 'cumulative_interval' must be positive, got {interval}"
+        )
+
+    return (lo, hi), interval
+
+
+def _parse_max_calls(
+    max_calls_raw: object, interval_raw: object, where: str
+) -> tuple[int | None, float | None]:
+    """Parse ``max_calls`` / ``calls_interval`` (a ceiling on write frequency)."""
+    if max_calls_raw is None:
+        if interval_raw is not None:
+            raise PolicyError(
+                f"{where}: 'calls_interval' set without 'max_calls' (has no effect)"
+            )
+        return None, None
+
+    if isinstance(max_calls_raw, bool) or not isinstance(max_calls_raw, int):
+        raise PolicyError(f"{where}: 'max_calls' must be an integer")
+    if max_calls_raw <= 0:
+        raise PolicyError(f"{where}: 'max_calls' must be positive, got {max_calls_raw}")
+
+    if interval_raw is None:
+        raise PolicyError(f"{where}: 'max_calls' requires 'calls_interval' (seconds)")
+    if isinstance(interval_raw, bool) or not _is_number(interval_raw):
+        raise PolicyError(f"{where}: 'calls_interval' must be a number")
+    interval = float(interval_raw)
+    if interval <= 0:
+        raise PolicyError(f"{where}: 'calls_interval' must be positive, got {interval}")
+
+    return int(max_calls_raw), interval
 
 
 def _parse_interlocks(raw: object, where: str) -> tuple[Interlock, ...]:

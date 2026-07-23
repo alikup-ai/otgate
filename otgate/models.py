@@ -72,7 +72,13 @@ class Interlock:
 
 @dataclass(frozen=True)
 class Rule:
-    """One policy rule for a single OPC UA tag."""
+    """One policy rule for a single OPC UA tag.
+
+    ``value_range``, ``max_rate`` and ``interlocks`` constrain a *single* write.
+    ``cumulative_range`` and ``max_calls`` constrain a *series* of writes, which
+    is what catches salami attacks: many individually legal steps that add up to
+    something the per-step limits would never have allowed.
+    """
 
     tag: str
     access: Access
@@ -80,6 +86,14 @@ class Rule:
     max_rate: float | None = None
     rate_interval: float | None = None  # seconds; required when max_rate is set
     interlocks: tuple[Interlock, ...] = field(default_factory=tuple)
+    # Cumulative drift allowed from the value the tag held at the start of the
+    # window, e.g. (-10, 10) = "may not end up more than 10 away from where it
+    # was cumulative_interval seconds ago, no matter how many steps it takes".
+    cumulative_range: tuple[float, float] | None = None
+    cumulative_interval: float | None = None  # seconds; required with cumulative_range
+    # Ceiling on how many writes may be executed within calls_interval seconds.
+    max_calls: int | None = None
+    calls_interval: float | None = None  # seconds; required when max_calls is set
 
 
 @dataclass(frozen=True)

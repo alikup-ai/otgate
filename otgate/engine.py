@@ -12,9 +12,11 @@ Write check order (first failing check wins):
 2. access == deny / access == read -> DENY
 3. value_range violated            -> DENY
 4. any interlock fires             -> DENY
-5. max_rate exceeded               -> DENY
-6. access == write_with_approval   -> ASK
-7. otherwise                       -> ALLOW
+5. max_rate exceeded (per step)    -> DENY
+6. cumulative_range exceeded       -> DENY  (series of steps, salami attacks)
+7. max_calls exhausted             -> DENY  (call storms)
+8. access == write_with_approval   -> ASK
+9. otherwise                       -> ALLOW
 
 Reads: tag in policy and access != deny -> ALLOW, else DENY.
 
@@ -126,16 +128,27 @@ class PolicyEngine:
         if interlock_decision is not None:
             return interlock_decision
 
-        # 5. Rate of change.
+        # 5. Rate of change (per step).
         rate_decision = self._check_rate(rule, value)
         if rate_decision is not None:
             return rate_decision
 
-        # 6. Approval required.
+        # 6. Cumulative drift over a window (catches salami attacks: many small
+        #    legal steps adding up to a move the per-step limits would refuse).
+        cumulative_decision = self._check_cumulative(rule, value)
+        if cumulative_decision is not None:
+            return cumulative_decision
+
+        # 7. Call budget over a window (catches call storms / recursion).
+        calls_decision = self._check_call_budget(rule)
+        if calls_decision is not None:
+            return calls_decision
+
+        # 8. Approval required.
         if rule.access is Access.WRITE_WITH_APPROVAL:
             return Decision(DecisionType.ASK, "write requires human approval")
 
-        # 7. Plain write.
+        # 9. Plain write.
         return Decision(DecisionType.ALLOW, "write allowed")
 
     def _check_range(self, rule: Rule, value: Scalar) -> Decision | None:
@@ -217,6 +230,59 @@ class PolicyEngine:
                 DecisionType.DENY,
                 f"rate of change too high: |{value} - {record.value}| = {delta:g} "
                 f"in {dt:.3g}s exceeds {rule.max_rate:g} per {rule.rate_interval:g}s",
+            )
+        return None
+
+    def _check_cumulative(self, rule: Rule, value: Scalar) -> Decision | None:
+        """Bound total drift from where the tag stood at the start of the window.
+
+        The per-step rate check can be walked around by taking many small legal
+        steps (a salami attack). This compares the proposed value against the
+        tag's value when the window opened, so the series is bounded regardless
+        of how it is sliced. Moving back towards the baseline is always allowed.
+        """
+        if rule.cumulative_range is None or rule.cumulative_interval is None:
+            return None
+        if isinstance(value, bool):
+            return None  # cumulative drift is meaningless for booleans
+
+        now = self._clock()
+        window = self._history.window(rule.tag, now - rule.cumulative_interval)
+        if window:
+            # Value the tag held when the window opened: the value *before* the
+            # oldest write in it is unknown, so use that write's value as the
+            # baseline — it is the earliest position we can attribute.
+            baseline = window[0].value
+        else:
+            # Nothing written inside the window. The last known write (if any) is
+            # the current position, and drift from it starts now.
+            last = self._history.get(rule.tag)
+            if last is None:
+                return None
+            baseline = last.value
+
+        lo, hi = rule.cumulative_range
+        drift = float(value) - baseline
+        if drift < lo or drift > hi:
+            return Decision(
+                DecisionType.DENY,
+                f"cumulative drift too large: {value} is {drift:+g} from {baseline:g} "
+                f"(the value {rule.cumulative_interval:g}s ago), allowed [{lo:g}, {hi:g}]",
+            )
+        return None
+
+    def _check_call_budget(self, rule: Rule) -> Decision | None:
+        """Bound how many writes may be executed within a window."""
+        if rule.max_calls is None or rule.calls_interval is None:
+            return None
+
+        now = self._clock()
+        used = len(self._history.window(rule.tag, now - rule.calls_interval))
+        if used >= rule.max_calls:
+            return Decision(
+                DecisionType.DENY,
+                f"call budget exhausted: {used} writes in the last "
+                f"{rule.calls_interval:g}s, limit is {rule.max_calls}",
             )
         return None
 

@@ -20,9 +20,14 @@ Coverage keys: **✅ addressed** · **◐ partial** · **✗ out of scope**
 > excessive execution, causing harmful side effects."*
 
 This is the risk otgate was built for. The agent is authorised to call
-`write_tag`; the danger is in **what it writes, how fast, and under which
-process conditions**. Identity and access controls do not see any of that — they
-only answer "may this agent call this tool at all".
+`write_tag`; the danger is in **what it writes, how fast, under which process
+conditions, and what its writes add up to**. Identity and access controls do not
+see any of that — they only answer "may this agent call this tool at all".
+
+Checks come in two kinds. Per-step limits (`value_range`, `max_rate`,
+`interlocks`) judge a single write. Cumulative limits (`cumulative_range`,
+`max_calls`) judge a *series*, which is what stops an agent from slicing a
+forbidden move into individually legal pieces.
 
 | ASI02 sub-mechanism | Mechanism in otgate | Proof |
 |---|---|---|
@@ -31,17 +36,24 @@ only answer "may this agent call this tool at all".
 | **Unsafe use given system state** — the call is fine in isolation, unsafe right now | `interlocks`: the engine reads the current state of a guard tag (e.g. emergency shutdown) before allowing the write | `tests/test_engine.py::test_interlock_active_denied` |
 | **Unverifiable safety condition** | If the interlock tag cannot be read, the write is **denied** rather than allowed (fail closed) | `tests/test_failclosed.py::test_unverifiable_interlock_fails_closed` |
 | **Writes to tools never intended for the agent** | Deny-by-default: any tag absent from the policy is refused | `tests/test_engine.py::test_write_tag_not_in_policy_denied` |
+| **Unsafe composition (salami attack)** — many individually legal steps adding up to a move the per-step limits would refuse | `cumulative_range` over `cumulative_interval`: drift is measured against the value the tag held when the window opened, so slicing the move into smaller steps does not help | `tests/test_toolchain.py::test_salami_attack_is_blocked`, `test_cumulative_limit_survives_restart` |
+| **Recursion / call storms** — a legitimate tool invoked far too many times | `max_calls` over `calls_interval`, counted on executed writes | `tests/test_toolchain.py::test_call_storm_is_blocked`, `test_call_budget_survives_restart` |
+
+Both cumulative limits are evaluated against persisted history, so restarting
+the gateway does not hand the agent a fresh budget.
 
 **Not covered within ASI02:**
 
-- **Tool chain manipulation.** Each call is evaluated independently. A sequence
-  of individually valid writes that is harmful only in aggregate (or across
-  several tags) is not detected. There is no cumulative budget across a series
-  of actions.
+- **Cross-tag composition.** Budgets are per tag. An agent that spreads its
+  effect across several different tags — each staying inside its own allowance —
+  is not detected. There is no notion of a tag group sharing one budget.
+- **Cross-tool causal reasoning.** otgate does not model how one tag's value
+  influences another, so it cannot judge whether a combination of individually
+  bounded writes is jointly unsafe.
 - **Non-scalar arguments.** Values are numbers or booleans; structured payloads
   are not inspected.
-- Rate limiting is per tag and wall-clock based, measured from the last write
-  otgate allowed — not against the true process trend from a historian.
+- Rate and drift are wall-clock based and measured against writes otgate itself
+  allowed — not against the true process trend from a historian.
 
 ---
 
