@@ -275,9 +275,8 @@ operator port that collides with the agent port range.
 otgate fails **closed** when the backend is unreachable — it never turns an
 outage into a silent success:
 
-- A write to a **rate-limited** tag whose live value cannot be read is
-  **denied**: an unverifiable rate baseline is treated exactly like an
-  unverifiable interlock.
+- A write whose **rate or drift baseline cannot be read** is **denied**: an
+  unverifiable baseline is treated exactly like an unverifiable interlock.
 
 - A read or write during an outage returns an **ERROR** decision (not an
   exception, not a fake success) and is written to the audit log with
