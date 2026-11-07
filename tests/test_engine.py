@@ -15,7 +15,7 @@ from otgate.models import (
     Rule,
 )
 
-from conftest import ESD, PV, SP, ManualClock
+from conftest import commit_write, ESD, PV, SP, ManualClock
 
 
 def make_engine(policy, backend, clock=None):
@@ -66,7 +66,7 @@ async def test_max_rate_exceeded_denied(policy, backend):
     clock = ManualClock()
     eng = PolicyEngine(policy, backend, clock=clock)
     # Establish history via a first executed write.
-    eng.record_write(SP, 50.0)
+    commit_write(eng, backend, SP, 50.0)
     clock.advance(1.0)  # 1 second later
     d = await eng.evaluate(Action(ActionType.WRITE, SP, 75.0))  # +25 in 1s
     assert d.type is DecisionType.DENY
@@ -76,7 +76,7 @@ async def test_max_rate_exceeded_denied(policy, backend):
 async def test_max_rate_within_limit_ok(policy, backend):
     clock = ManualClock()
     eng = PolicyEngine(policy, backend, clock=clock)
-    eng.record_write(SP, 50.0)
+    commit_write(eng, backend, SP, 50.0)
     clock.advance(1.0)
     d = await eng.evaluate(Action(ActionType.WRITE, SP, 50.05))  # tiny change
     assert d.type is DecisionType.ASK  # passes rate, then asks
@@ -85,17 +85,29 @@ async def test_max_rate_within_limit_ok(policy, backend):
 async def test_rate_allows_full_step_after_interval(policy, backend):
     clock = ManualClock()
     eng = PolicyEngine(policy, backend, clock=clock)
-    eng.record_write(SP, 50.0)
+    commit_write(eng, backend, SP, 50.0)
     clock.advance(60.0)  # a full rate_interval later
     d = await eng.evaluate(Action(ActionType.WRITE, SP, 54.9))  # +4.9 <= 5
     assert d.type is DecisionType.ASK
 
 
-async def test_first_write_no_history_not_rate_limited(policy, backend):
+async def test_first_write_is_bounded_by_the_live_value(policy, backend):
+    """With no history, the step is bounded to one interval from the live value.
+
+    This test previously asserted the opposite — that a first write of 80.0 onto
+    a setpoint sitting at 55.0 "must not be rate-denied" — which is exactly the
+    hole fixed in v0.2: the check was skipped whenever history was empty, so the
+    first write after any restart got a free jump. See
+    tests/test_rate_live_baseline.py for the full regression.
+    """
     eng = PolicyEngine(policy, backend)
-    # No prior write recorded; a big-but-in-range value must not be rate-denied.
-    d = await eng.evaluate(Action(ActionType.WRITE, SP, 80.0))
-    assert d.type is DecisionType.ASK
+    # SP is live at 55.0 and max_rate is 5/60s, so +25 in one step is refused ...
+    far = await eng.evaluate(Action(ActionType.WRITE, SP, 80.0))
+    assert far.type is DecisionType.DENY
+    assert "rate of change too high" in far.reason
+    # ... while a step inside one interval's allowance still reaches the gate.
+    near = await eng.evaluate(Action(ActionType.WRITE, SP, 59.0))
+    assert near.type is DecisionType.ASK
 
 
 async def test_write_with_approval_asks(policy, backend):

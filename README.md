@@ -275,6 +275,10 @@ operator port that collides with the agent port range.
 otgate fails **closed** when the backend is unreachable — it never turns an
 outage into a silent success:
 
+- A write to a **rate-limited** tag whose live value cannot be read is
+  **denied**: an unverifiable rate baseline is treated exactly like an
+  unverifiable interlock.
+
 - A read or write during an outage returns an **ERROR** decision (not an
   exception, not a fake success) and is written to the audit log with
   `executed: false`.
@@ -319,8 +323,9 @@ simulator over a real `opc.tcp://` connection:
 - **Latency overhead ≈ +0.16 ms/call** (mean) over the raw backend read — about
   **+20 %** relative on a sub-millisecond local read. The policy check itself is
   microseconds; `audit.record()` is ~0.03 ms (the file handle is kept open and
-  flushed, not reopened per call). Writes add one extra backend read for the
-  rate/interlock checks (a deliberate safety round-trip).
+  flushed, not reopened per call). A rate-limited write costs one extra backend
+  read to fetch the live baseline, and an interlocked write one read per guard
+  tag — deliberate safety round-trips.
 
 This is comfortably fast for the intended use — an LLM/agent issuing setpoints on
 the scale of seconds. **otgate is not designed to sit inside a real-time control
@@ -352,14 +357,15 @@ Honest limitations — these are deliberate cuts, not oversights:
 - **Scalars only.** Values are numbers or booleans; arrays/structs are not supported.
 - **Single client.** No multi-user access, queueing, or locking.
 - **Agent config is static.** Multiple agents, each with their own token, policy and audit identity, are supported via `agents.yaml`. But the set of agents is read at startup — there is no live add/revoke; changing it means a restart. Tokens are long-lived (no rotation/expiry).
-- **`max_rate` is wall-clock and per-process.** It measures against the last write otgate let through, not the true historian trend. Rate history is in-memory by default; set `OTGATE_RATE_HISTORY` to a file path to make it durable across restarts (otherwise a restart empties it and the first post-restart write to a rate-limited tag is not rate-checked).
+- **`max_rate` is wall-clock, and its time base is per-process.** The *baseline* is the tag's live value, read from the backend at check time, so the limit holds even when something other than otgate moves the tag. The *time base* still comes from otgate's own record of the last write it let through: with no record there is no measurable interval, so the write is bounded to one full `rate_interval` allowance rather than being rate-checked against elapsed time. Set `OTGATE_RATE_HISTORY` to a file path to keep that time base across restarts. otgate still does not read the historian trend, so it cannot see *how* the tag got to its current value.
 - **No GUI.**
 
 ## Roadmap
 
 - Live agent management (add/revoke without restart, token rotation/expiry)
 - Time-window conditions (shifts, maintenance windows)
-- Richer trend-based rate limits (persisted rate history landed via `OTGATE_RATE_HISTORY`)
+- Historian-trend rate limits (the live-value baseline landed in v0.2; reading the actual trend is the remaining step)
+- Cross-tag budgets: a group of tags sharing one cumulative allowance, so an agent cannot spread its effect across several individually-compliant tags
 - More interlock actions beyond `deny`
 - High availability (otgate is single-instance today; a crash drops agent access until restart)
 
