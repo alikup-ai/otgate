@@ -20,7 +20,7 @@ from otgate.models import Access, Action, ActionType, DecisionType, Policy, Rule
 from otgate.policy import PolicyError, parse_policy
 from otgate.rate_history import InMemoryRateHistory, JsonlRateHistory
 
-from conftest import SP, ManualClock
+from conftest import commit_write, SP, ManualClock
 
 pytestmark = pytest.mark.asi02
 
@@ -48,7 +48,7 @@ async def test_salami_attack_is_blocked(backend):
     )
 
     value = 50.0
-    engine.record_write(SP, value)  # baseline inside the window
+    commit_write(engine, backend, SP, value)  # baseline inside the window
 
     # Four steps of +2.5 stay within +/-10 drift.
     for _ in range(4):
@@ -56,7 +56,7 @@ async def test_salami_attack_is_blocked(backend):
         value += 2.5
         decision = await engine.evaluate(Action(ActionType.WRITE, SP, value))
         assert decision.type is DecisionType.ALLOW, decision.reason
-        engine.record_write(SP, value)
+        commit_write(engine, backend, SP, value)
 
     assert value == 60.0  # drifted exactly the allowed 10
 
@@ -74,9 +74,9 @@ async def test_moving_back_towards_baseline_is_allowed(backend):
     engine = PolicyEngine(
         _drift_policy(), backend, clock=clock, history=InMemoryRateHistory()
     )
-    engine.record_write(SP, 50.0)
+    commit_write(engine, backend, SP, 50.0)
     clock.advance(60.0)
-    engine.record_write(SP, 60.0)  # at the edge of the allowance
+    commit_write(engine, backend, SP, 60.0)  # at the edge of the allowance
 
     clock.advance(60.0)
     decision = await engine.evaluate(Action(ActionType.WRITE, SP, 52.0))
@@ -89,9 +89,9 @@ async def test_drift_allowance_refreshes_after_window(backend):
     engine = PolicyEngine(
         _drift_policy(), backend, clock=clock, history=InMemoryRateHistory()
     )
-    engine.record_write(SP, 50.0)
+    commit_write(engine, backend, SP, 50.0)
     clock.advance(60.0)
-    engine.record_write(SP, 60.0)
+    commit_write(engine, backend, SP, 60.0)
 
     # Long after the window has passed, 60 is the new baseline.
     clock.advance(7200.0)
@@ -121,9 +121,9 @@ async def test_cumulative_limit_survives_restart(backend, tmp_path):
     engine1 = PolicyEngine(
         _drift_policy(), backend, clock=clock, history=JsonlRateHistory(path)
     )
-    engine1.record_write(SP, 50.0)
+    commit_write(engine1, backend, SP, 50.0)
     clock.advance(60.0)
-    engine1.record_write(SP, 60.0)
+    commit_write(engine1, backend, SP, 60.0)
 
     # Restart: new engine, same persistent history, same window.
     clock.advance(60.0)
@@ -161,7 +161,7 @@ async def test_call_storm_is_blocked(backend):
         clock.advance(1.0)
         decision = await engine.evaluate(Action(ActionType.WRITE, SP, 50.0 + i))
         assert decision.type is DecisionType.ALLOW
-        engine.record_write(SP, 50.0 + i)
+        commit_write(engine, backend, SP, 50.0 + i)
 
     clock.advance(1.0)
     decision = await engine.evaluate(Action(ActionType.WRITE, SP, 60.0))
@@ -175,7 +175,7 @@ async def test_call_budget_refreshes_after_interval(backend):
         _budget_policy(), backend, clock=clock, history=InMemoryRateHistory()
     )
     for i in range(3):
-        engine.record_write(SP, 50.0 + i)
+        commit_write(engine, backend, SP, 50.0 + i)
 
     assert (await engine.evaluate(Action(ActionType.WRITE, SP, 60.0))).type is DecisionType.DENY
 
@@ -191,7 +191,7 @@ async def test_call_budget_survives_restart(backend, tmp_path):
         _budget_policy(), backend, clock=clock, history=JsonlRateHistory(path)
     )
     for i in range(3):
-        engine1.record_write(SP, 50.0 + i)
+        commit_write(engine1, backend, SP, 50.0 + i)
 
     engine2 = PolicyEngine(
         _budget_policy(), backend, clock=clock, history=JsonlRateHistory(path)

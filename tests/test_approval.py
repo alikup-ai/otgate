@@ -83,7 +83,10 @@ async def test_approve_executes(gw):
 
 
 async def test_deny_does_not_execute(gw):
-    result = await gw.write(SP, 62.0)
+    # 59.0 is within one rate_interval's allowance of the live SP (55.0), so the
+    # write reaches the approval gate. A larger first step would be rate-denied
+    # before it is ever parked, which is the rate check working, not this flow.
+    result = await gw.write(SP, 59.0)
     res = gw.deny(result.approval_id)
     assert res.status == "DENIED"
     assert res.executed is False

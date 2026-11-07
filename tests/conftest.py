@@ -19,6 +19,19 @@ from pathlib import Path
 POLICY_PATH = Path(__file__).resolve().parent.parent / "examples" / "reactor_policy.yaml"
 
 
+def commit_write(engine, backend, tag, value):
+    """Record a write the way :class:`~otgate.gateway.Gateway` does.
+
+    In production ``record_write`` is called only *after* a successful
+    ``backend.write`` (see ``Gateway._execute``), so the live value and the rate
+    history always agree right after a write. Tests must move both: since v0.2
+    the engine reads the live value as its rate baseline, and advancing only the
+    history would create a divergence that cannot occur in production.
+    """
+    backend.set(tag, value)
+    engine.record_write(tag, value)
+
+
 class ManualClock:
     """A controllable monotonic clock for deterministic rate tests."""
 

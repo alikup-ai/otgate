@@ -20,9 +20,13 @@ Write check order (first failing check wins):
 
 Reads: tag in policy and access != deny -> ALLOW, else DENY.
 
-Rate of change is measured against the last write this engine *let through*
-(kept in-memory, per tag, by wall-clock time). This is a deliberate v0.1
-limitation documented in the README: it is per-process and resets on restart.
+Rate of change is measured against the **live value of the tag**, read from the
+backend at check time, and — when a prior write through this engine is on record
+— against that write as well, taking whichever gives the larger delta. Reading
+the live value is what makes the check hold when something other than otgate
+moves the tag (an operator at the HMI, a cascade controller, the PLC program,
+another agent). A tag that cannot be read fails closed, exactly like an
+unverifiable interlock.
 """
 
 from __future__ import annotations
@@ -129,7 +133,7 @@ class PolicyEngine:
             return interlock_decision
 
         # 5. Rate of change (per step).
-        rate_decision = self._check_rate(rule, value)
+        rate_decision = await self._check_rate(rule, value)
         if rate_decision is not None:
             return rate_decision
 
@@ -194,14 +198,67 @@ class PolicyEngine:
                 )
         return None
 
-    def _check_rate(self, rule: Rule, value: Scalar) -> Decision | None:
+    async def _check_rate(self, rule: Rule, value: Scalar) -> Decision | None:
+        """Bound how fast the tag may move, measured against the live process.
+
+        The baseline is the value the tag *actually holds right now*, read from
+        the backend. That is what the process will jump from, no matter who put
+        it there — an operator at the HMI, a cascade controller, the PLC program
+        or another agent that does not go through otgate.
+
+        Until v0.2 this check measured only against the last write otgate let
+        through, which made it bypassable: move the tag outside the gateway and
+        the gateway's idea of "current" goes stale, so an arbitrarily large real
+        jump looks like a small legal step. See
+        ``tests/test_rate_live_baseline.py`` for the regression that proves it.
+
+        When history *is* available, both baselines are evaluated and the larger
+        delta wins — the live value is the truth about the process, the recorded
+        write is the truth about what otgate commanded, and a safety gate should
+        answer to whichever is worse.
+        """
         if rule.max_rate is None or rule.rate_interval is None:
             return None
         if isinstance(value, bool):
             return None  # rate is meaningless for booleans
+
+        # Live baseline. A tag that cannot be read cannot be rate-checked, and
+        # an unverifiable safety condition fails closed — same rule as interlocks.
+        try:
+            live = await self._backend.read(rule.tag)
+        except KeyError:
+            return Decision(
+                DecisionType.DENY,
+                f"tag {rule.tag} is unavailable for the rate check (failing closed)",
+            )
+        except BackendError:
+            return Decision(
+                DecisionType.DENY,
+                f"tag {rule.tag} could not be read for the rate check "
+                "(backend unreachable, failing closed)",
+            )
+
+        # A boolean on a rate-limited numeric tag is a misconfiguration, not a
+        # baseline: fall back to history rather than coercing True to 1.0.
+        live_delta = (
+            None if isinstance(live, bool) else abs(float(value) - float(live))
+        )
+
         record = self._history.get(rule.tag)
         if record is None:
-            # No prior write through the gate: nothing to measure against.
+            # No write has gone through the gate, so there is no time base and
+            # no rate can be computed. Granting one full interval's worth of
+            # change from the live value is the conservative reading of
+            # "no faster than max_rate per rate_interval"; skipping the check
+            # entirely — the pre-v0.2 behaviour — handed the first write after
+            # every restart an unbounded step.
+            if live_delta is not None and live_delta > rule.max_rate:
+                return Decision(
+                    DecisionType.DENY,
+                    f"rate of change too high: |{value} - {live}| = {live_delta:g} "
+                    f"exceeds {rule.max_rate:g} per {rule.rate_interval:g}s "
+                    "(no write history yet, so one interval is allowed)",
+                )
             return None
 
         now = self._clock()
@@ -212,7 +269,13 @@ class PolicyEngine:
         # computing a nonsensical allowance.
         if dt < 0:
             dt = 0.0
-        delta = abs(float(value) - record.value)
+
+        # Worse of the two baselines (see the docstring).
+        hist_delta = abs(float(value) - record.value)
+        if live_delta is not None and live_delta > hist_delta:
+            delta, baseline = live_delta, live
+        else:
+            delta, baseline = hist_delta, record.value
 
         # Allowed magnitude of change over the elapsed interval, capped at one
         # full rate_interval so that waiting longer than the interval always
@@ -228,7 +291,7 @@ class PolicyEngine:
         if delta > allowed:
             return Decision(
                 DecisionType.DENY,
-                f"rate of change too high: |{value} - {record.value}| = {delta:g} "
+                f"rate of change too high: |{value} - {baseline}| = {delta:g} "
                 f"in {dt:.3g}s exceeds {rule.max_rate:g} per {rule.rate_interval:g}s",
             )
         return None

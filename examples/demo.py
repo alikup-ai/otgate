@@ -166,9 +166,14 @@ async def _salami_demo(audit) -> None:
 def _prime_rate_history(gateway: Gateway, *, tag: str, value: float, seconds_ago: float) -> None:
     """Simulate a previously-approved-and-executed write for the rate demo.
 
-    Reaches into the engine to seed its rate history without going through an
-    ASK/approval round-trip (which v0.1 does not implement), backdated by
-    ``seconds_ago`` so the next write appears to happen shortly after.
+    Seeds the engine's rate history without going through an ASK/approval
+    round-trip, backdated by ``seconds_ago`` so the next write appears to happen
+    shortly after.
+
+    The tag itself is moved too, because an executed write lands on the backend
+    *and* in the history — the engine reads the live value as its rate baseline,
+    so seeding only the history would model a state that cannot occur in
+    production.
     """
     import time
 
@@ -176,6 +181,7 @@ def _prime_rate_history(gateway: Gateway, *, tag: str, value: float, seconds_ago
 
     engine = gateway._engine  # demo-only: seed rate history directly
     engine._history.put(tag, WriteRecord(wall_ts=time.time() - seconds_ago, value=value))
+    gateway._backend.set(tag, value)
 
 
 if __name__ == "__main__":

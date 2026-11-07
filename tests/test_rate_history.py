@@ -17,7 +17,7 @@ from otgate.rate_history import (
     WriteRecord,
 )
 
-from conftest import SP, ManualClock
+from conftest import commit_write, SP, ManualClock
 
 
 # --- store-level tests ---
@@ -81,7 +81,7 @@ async def test_rate_limit_survives_restart(policy, backend, tmp_path):
 
     # First engine instance: an approved write is executed and recorded.
     engine1 = PolicyEngine(policy, backend, clock=clock, history=JsonlRateHistory(path))
-    engine1.record_write(SP, 50.0)
+    commit_write(engine1, backend, SP, 50.0)
 
     # Simulate a restart: brand-new engine, same persistent history, clock has
     # only advanced one second (the attacker restarts and immediately retries).
@@ -93,19 +93,28 @@ async def test_rate_limit_survives_restart(policy, backend, tmp_path):
     assert "rate" in decision.reason
 
 
-async def test_without_persistence_restart_loses_limit(policy, backend):
-    """Counter-example: in-memory history is empty after 'restart', so the same
-    too-fast write is NOT rate-denied (only ASK). This documents the gap that
-    persistence closes."""
+async def test_without_persistence_restart_is_still_bounded(policy, backend):
+    """Losing the history is no longer a bypass.
+
+    This used to be a counter-example asserting ASK: with an empty in-memory
+    history the rate check was skipped entirely, so a restart handed the agent
+    an unbounded first step, and persistence was the only thing standing in the
+    way. Since v0.2 the baseline is the live value, so the step is bounded even
+    with no history at all.
+
+    Persistence is still worth enabling — it restores the *time base*, making
+    the limit a true rate instead of one-interval-per-restart — which is what
+    test_rate_limit_survives_restart above pins.
+    """
     clock = ManualClock()
     engine1 = PolicyEngine(policy, backend, clock=clock, history=InMemoryRateHistory())
-    engine1.record_write(SP, 50.0)
+    commit_write(engine1, backend, SP, 50.0)
 
     clock.advance(1.0)
     engine2 = PolicyEngine(policy, backend, clock=clock, history=InMemoryRateHistory())
     decision = await engine2.evaluate(Action(ActionType.WRITE, SP, 78.0))
-    # No history -> rate check is skipped -> only the approval gate remains.
-    assert decision.type is DecisionType.ASK
+    assert decision.type is DecisionType.DENY
+    assert "rate of change too high" in decision.reason
 
 
 async def test_persisted_history_allows_slow_change_after_interval(policy, backend, tmp_path):
@@ -113,7 +122,7 @@ async def test_persisted_history_allows_slow_change_after_interval(policy, backe
     path = tmp_path / "rate.jsonl"
     clock = ManualClock()
     engine1 = PolicyEngine(policy, backend, clock=clock, history=JsonlRateHistory(path))
-    engine1.record_write(SP, 50.0)
+    commit_write(engine1, backend, SP, 50.0)
 
     clock.advance(60.0)  # a full rate_interval later
     engine2 = PolicyEngine(policy, backend, clock=clock, history=JsonlRateHistory(path))
