@@ -20,7 +20,11 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "mcp>=1.2.0",
+    # Pinned below 2.0: mcp 2.x renamed FastMCP to MCPServer and moved
+    # mcp.server.fastmcp, which otgate/server.py still imports. Without this
+    # cap a fresh install pulls 2.x and fails at import. Migration tracked in
+    # the roadmap; until then the cap is what keeps `pip install` working.
+    "mcp>=1.2.0,<2",
     "pyyaml>=6.0",
 ]
 
@@ -43,6 +47,9 @@ packages = ["otgate"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Pin the fixture loop scope explicitly: pytest-asyncio >=1.0 warns when it is
+# unset and will change the default in a future release.
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 # Make the repo root and the tests dir importable so tests can `import otgate`
 # and `import conftest` regardless of the working directory.
