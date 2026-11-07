@@ -187,6 +187,26 @@ Example MCP client config (FakeBackend):
 }
 ```
 
+### Related work: the layer underneath
+
+otgate governs **what the process allows right now** — ranges, rate against the
+live value, interlocks, drift, approval. It does not try to be the access layer
+underneath that, and there is a good one:
+[IndustriAgents/OPCUA-MCP](https://github.com/IndustriAgents/OPCUA-MCP) answers
+*may this caller touch this node at all* — read-only by default, control
+profiles, allowlisted targets, pinned certificates, audited control calls.
+
+The two questions are genuinely different. A write of 40 °C to an allowlisted
+target satisfies every access rule and is still wrong if the tag reads 22 °C and
+the ramp violates a thermal limit. Access control without process limits permits
+that write; process limits without access control have nothing to stand on.
+
+A visible difference in the audit trail shows the split: their acceptance
+criteria require records to carry profile, tool, decision and target IDs
+**without values**, which is right for an access log. otgate records the value,
+because "200.0 refused, outside [40, 80]" is not a sentence you can write
+without it.
+
 ### Connecting a real OPC UA server
 
 No code changes — install the extra and point the config at your server:
