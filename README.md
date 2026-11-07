@@ -7,7 +7,7 @@ An OT-aware authorization gateway that sits between an LLM agent and an industri
 [Русская версия →](README.ru.md)
 
 <p align="center">
-  <img src="assets/demo.svg" alt="otgate demo: an LLM agent's writes to a reactor gated by policy — ALLOW, ASK, DENY with reasons" width="100%">
+  <img src="assets/demo.gif" alt="otgate intercepting an agent's writes to a reactor: the policy checks run in order — value range, interlocks, rate of change, drift, call budget, human approval — and each write is allowed, parked for approval, or denied with a reason" width="100%">
 </p>
 
 ```
@@ -15,6 +15,15 @@ An OT-aware authorization gateway that sits between an LLM agent and an industri
                                     |
                      [policy engine + audit + shadow mode]
 ```
+
+<details>
+<summary>The same decisions as terminal output (<code>python examples/demo.py</code>)</summary>
+
+<p align="center">
+  <img src="assets/demo.svg" alt="otgate demo: an LLM agent's writes to a reactor gated by policy — ALLOW, ASK, DENY with reasons" width="100%">
+</p>
+
+</details>
 
 otgate is itself an MCP server. The agent connects to it as if it were an ordinary OPC UA MCP; internally otgate holds a client to the real OPC UA server. Every call is transparent to the agent, and otgate intercepts each one to apply policy and record an audit line.
 
