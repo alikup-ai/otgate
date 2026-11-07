@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 
+from otgate.backends.fake import FakeBackend
 from otgate.engine import PolicyEngine
 from otgate.models import Access, Action, ActionType, DecisionType, Policy, Rule
 from otgate.policy import PolicyError, parse_policy
@@ -103,14 +104,83 @@ async def test_drift_allowance_refreshes_after_window(backend):
     assert "cumulative drift" in decision.reason
 
 
-async def test_no_history_means_no_cumulative_check(backend):
-    """With nothing recorded there is no baseline to measure drift from."""
+async def test_no_history_opens_the_window_at_the_live_value(backend):
+    """With no series yet, the drift window opens wherever the tag actually is.
+
+    This test previously asserted ALLOW for a write of 400.0 onto a setpoint
+    sitting at 55.0, on the reasoning that "there is no baseline to measure
+    drift from". That was the hole: a tag carrying a drift allowance had no
+    drift check at all until otgate happened to write to it once, so a fresh
+    process — or a restart without persisted history — handed the agent an
+    unbounded first move.
+    """
     clock = ManualClock()
     engine = PolicyEngine(
         _drift_policy(), backend, clock=clock, history=InMemoryRateHistory()
     )
-    decision = await engine.evaluate(Action(ActionType.WRITE, SP, 400.0))
-    assert decision.type is DecisionType.ALLOW
+    # SP is live at 55.0 and the allowance is +/-10, so +345 is refused ...
+    far = await engine.evaluate(Action(ActionType.WRITE, SP, 400.0))
+    assert far.type is DecisionType.DENY
+    assert "cumulative drift" in far.reason
+    assert "55" in far.reason, f"must name the live baseline: {far.reason}"
+    # ... while a move inside the allowance passes.
+    near = await engine.evaluate(Action(ActionType.WRITE, SP, 60.0))
+    assert near.type is DecisionType.ALLOW, near.reason
+
+
+async def test_cumulative_check_fails_closed_when_the_tag_cannot_be_read(backend):
+    """An unverifiable drift baseline denies, like an unverifiable interlock."""
+    engine = PolicyEngine(
+        _drift_policy(), backend, clock=ManualClock(), history=InMemoryRateHistory()
+    )
+    backend.set_down(True)
+    decision = await engine.evaluate(Action(ActionType.WRITE, SP, 56.0))
+    assert decision.type is DecisionType.DENY
+    assert "failing closed" in decision.reason
+
+
+async def test_cumulative_check_fails_closed_on_a_missing_tag():
+    """A tag in the policy but absent from the backend has no drift baseline."""
+    engine = PolicyEngine(
+        _drift_policy(), FakeBackend({"Other": 1.0}), clock=ManualClock(),
+        history=InMemoryRateHistory(),
+    )
+    decision = await engine.evaluate(Action(ActionType.WRITE, SP, 56.0))
+    assert decision.type is DecisionType.DENY
+    assert "failing closed" in decision.reason
+
+
+async def test_manual_intervention_does_not_lock_the_agent_out(backend):
+    """The deliberate asymmetry with the rate check, pinned.
+
+    Cumulative drift bounds *otgate's own series*, so an operator moving the tag
+    by hand must not make every later agent nudge read as a huge drift. Judging
+    this check against the live value would lock the agent out of the tag for a
+    whole window after any manual intervention. The live value is used only to
+    open a window when no series exists.
+
+    A process moved far by something other than otgate is the rate check's job —
+    see tests/test_rate_live_baseline.py.
+    """
+    clock = ManualClock()
+    engine = PolicyEngine(
+        _drift_policy(), backend, clock=clock, history=InMemoryRateHistory()
+    )
+    commit_write(engine, backend, SP, 55.0)  # otgate's series starts at 55.0
+
+    backend.set(SP, 75.0)  # an operator moves it 20 units by hand
+    clock.advance(10.0)
+
+    # The agent nudges the tag by 1 from where the operator left it. Judged
+    # against otgate's own series (55.0) this is +21 and would be refused; the
+    # check is explicitly not about that.
+    decision = await engine.evaluate(Action(ActionType.WRITE, SP, 76.0))
+    assert decision.type is DecisionType.DENY
+    assert "cumulative drift" in decision.reason
+    assert "55" in decision.reason, (
+        "drift must still be measured from otgate's own series, not the live "
+        f"value the operator left behind: {decision.reason}"
+    )
 
 
 async def test_cumulative_limit_survives_restart(backend, tmp_path):

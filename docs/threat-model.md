@@ -52,8 +52,14 @@ the gateway does not hand the agent a fresh budget.
   bounded writes is jointly unsafe.
 - **Non-scalar arguments.** Values are numbers or booleans; structured payloads
   are not inspected.
-- Rate and drift are wall-clock based and measured against writes otgate itself
-  allowed — not against the true process trend from a historian.
+- **No historian trend.** Rate and drift are wall-clock based. Since v0.2 the
+  rate check reads the tag's live value, so it sees *where* the process is; it
+  still cannot see *how* it got there. Cumulative drift is scoped on purpose to
+  the series otgate allowed (judging it against the live value would lock the
+  agent out of a tag for a whole window after any manual intervention), so a
+  move made outside otgate is caught by the rate check, not by the drift check.
+  Both open their window at the live value when no series exists, and both fail
+  closed when that value cannot be read.
 
 ---
 

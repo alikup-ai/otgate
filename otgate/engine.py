@@ -27,6 +27,13 @@ the live value is what makes the check hold when something other than otgate
 moves the tag (an operator at the HMI, a cascade controller, the PLC program,
 another agent). A tag that cannot be read fails closed, exactly like an
 unverifiable interlock.
+
+Cumulative drift deliberately differs: it bounds **the series otgate itself let
+through**, because that is a question about the agent, not about the process.
+Judging it against the live value would lock the agent out of a tag for a whole
+window after any manual intervention. The live value is used only to open the
+window when no series exists yet — which is also fail-closed if it cannot be
+read. See :meth:`PolicyEngine._check_cumulative` for the full reasoning.
 """
 
 from __future__ import annotations
@@ -139,7 +146,7 @@ class PolicyEngine:
 
         # 6. Cumulative drift over a window (catches salami attacks: many small
         #    legal steps adding up to a move the per-step limits would refuse).
-        cumulative_decision = self._check_cumulative(rule, value)
+        cumulative_decision = await self._check_cumulative(rule, value)
         if cumulative_decision is not None:
             return cumulative_decision
 
@@ -296,13 +303,25 @@ class PolicyEngine:
             )
         return None
 
-    def _check_cumulative(self, rule: Rule, value: Scalar) -> Decision | None:
+    async def _check_cumulative(self, rule: Rule, value: Scalar) -> Decision | None:
         """Bound total drift from where the tag stood at the start of the window.
 
         The per-step rate check can be walked around by taking many small legal
         steps (a salami attack). This compares the proposed value against the
         tag's value when the window opened, so the series is bounded regardless
         of how it is sliced. Moving back towards the baseline is always allowed.
+
+        **Scope: this bounds the series otgate itself let through**, which is a
+        deliberate difference from :meth:`_check_rate`. Rate takes the worse of
+        the live value and the recorded write, because "how fast is the process
+        moving right now" is a question about the process. Cumulative drift is a
+        question about the agent's own series, and judging it against the live
+        value would lock the agent out of a tag for a whole window after any
+        manual intervention: an operator moving a setpoint 20 units by hand
+        would make every subsequent agent nudge, however small, read as a
+        20-unit drift. The live value is therefore used only to *open* a window
+        when no series exists yet (below). A process that has been moved far by
+        something other than otgate is caught by the rate check, not here.
         """
         if rule.cumulative_range is None or rule.cumulative_interval is None:
             return None
@@ -317,12 +336,42 @@ class PolicyEngine:
             # baseline — it is the earliest position we can attribute.
             baseline = window[0].value
         else:
-            # Nothing written inside the window. The last known write (if any) is
-            # the current position, and drift from it starts now.
             last = self._history.get(rule.tag)
-            if last is None:
-                return None
-            baseline = last.value
+            if last is not None:
+                # Nothing written inside the window. The last known write is the
+                # current position, and drift from it starts now.
+                baseline = last.value
+            else:
+                # No series at all — a fresh process, or a restart with no
+                # persisted history. The window opens at wherever the tag
+                # actually is. Returning None here (the pre-v0.2 behaviour) meant
+                # a tag with a drift allowance had no drift check whatsoever
+                # until otgate happened to write to it once.
+                try:
+                    live = await self._backend.read(rule.tag)
+                except KeyError:
+                    return Decision(
+                        DecisionType.DENY,
+                        f"tag {rule.tag} is unavailable for the cumulative "
+                        "drift check (failing closed)",
+                    )
+                except BackendError:
+                    return Decision(
+                        DecisionType.DENY,
+                        f"tag {rule.tag} could not be read for the cumulative "
+                        "drift check (backend unreachable, failing closed)",
+                    )
+                if isinstance(live, bool):
+                    # A boolean on a tag carrying a numeric drift allowance is a
+                    # policy/plant mismatch, not a baseline. Fail closed and make
+                    # the misconfiguration visible rather than skip the check.
+                    return Decision(
+                        DecisionType.DENY,
+                        f"tag {rule.tag} reads as boolean ({live!r}) but has a "
+                        "cumulative_range; cannot establish a drift baseline "
+                        "(failing closed)",
+                    )
+                baseline = float(live)
 
         lo, hi = rule.cumulative_range
         drift = float(value) - baseline
