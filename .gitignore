@@ -42,3 +42,6 @@ Thumbs.db
 # Type checkers
 .mypy_cache/
 .ruff_cache/
+.build/
+.venv*/
+.tools/

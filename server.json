@@ -1,0 +1,61 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.alikup-ai/otgate",
+  "title": "otgate — OT policy gateway",
+  "description": "Gates an LLM agent's writes to an OPC UA server on ranges, rate of change and live interlocks.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/alikup-ai/otgate",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/alikup-ai/otgate",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "otgate",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "OTGATE_BACKEND",
+          "description": "Backend to gate: 'fake' for the bundled in-memory reactor simulator, 'asyncua' for a real OPC UA server. Start with 'fake' — it needs no plant and no extra dependency.",
+          "default": "fake"
+        },
+        {
+          "name": "OTGATE_POLICY",
+          "description": "Path to the policy YAML. Any tag not listed in it is denied by default.",
+          "default": "examples/reactor_policy.yaml"
+        },
+        {
+          "name": "OTGATE_AUDIT",
+          "description": "Path to the append-only JSONL audit log. Every call, allowed or not, produces exactly one line.",
+          "default": "audit.jsonl"
+        },
+        {
+          "name": "OTGATE_SHADOW",
+          "description": "Set to 1 to run in shadow mode: allowed writes are recorded as 'WOULD execute' and never reach the backend. Use this to watch an agent for a while before letting it touch anything.",
+          "default": ""
+        },
+        {
+          "name": "OTGATE_RATE_HISTORY",
+          "description": "Path to a JSONL file that keeps the rate-of-change time base across restarts. Without it a restart loses the time base, and rate limits fall back to a one-interval allowance.",
+          "default": ""
+        },
+        {
+          "name": "OTGATE_OPCUA_ENDPOINT",
+          "description": "OPC UA endpoint, e.g. opc.tcp://localhost:4840. Required when OTGATE_BACKEND=asyncua.",
+          "default": ""
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "com.github": {
+        "serverDisplayName": "otgate"
+      }
+    }
+  }
+}

@@ -6,6 +6,10 @@ An OT-aware authorization gateway that sits between an LLM agent and an industri
 
 [Русская версия →](README.ru.md)
 
+<!-- Ownership token for the official MCP Registry; it verifies this PyPI
+     package against server.json. Invisible when rendered. Do not remove. -->
+<!-- mcp-name: io.github.alikup-ai/otgate -->
+
 <p align="center">
   <img src="assets/demo.gif" alt="otgate intercepting an agent's writes to a reactor: the policy checks run in order — value range, interlocks, rate of change, drift, call budget, human approval — and each write is allowed, parked for approval, or denied with a reason" width="100%">
 </p>

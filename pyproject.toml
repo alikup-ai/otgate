@@ -9,7 +9,7 @@ description = "OT-aware authorization gateway between an LLM agent and an indust
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "otgate contributors" }]
+authors = [{ name = "Ali K." }]
 keywords = ["opc-ua", "mcp", "llm", "ot-security", "industrial", "guardrails"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -41,9 +41,31 @@ otgate-http = "otgate.server:main_http"
 [project.urls]
 Homepage = "https://github.com/alikup-ai/otgate"
 Repository = "https://github.com/alikup-ai/otgate"
+Issues = "https://github.com/alikup-ai/otgate/issues"
+Changelog = "https://github.com/alikup-ai/otgate/commits/main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["otgate"]
+
+# Explicit allow-list rather than "everything git does not ignore": a stray
+# virtualenv in the working tree once put 19 MB into a 50 KB package, and an
+# allow-list cannot be broken that way by something nobody remembered to ignore.
+[tool.hatch.build.targets.sdist]
+include = [
+    "otgate/",
+    "tests/",
+    "examples/",
+    "docs/",
+    "assets/demo.gif",
+    "assets/demo.svg",
+    "assets/make_demo_gif.py",
+    "assets/make_demo_svg.py",
+    "README.md",
+    "README.ru.md",
+    "LICENSE",
+    "server.json",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
