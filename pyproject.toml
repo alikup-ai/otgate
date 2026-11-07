@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "otgate"
-version = "0.1.0"
+version = "0.1.1"
 description = "OT-aware authorization gateway between an LLM agent and an industrial OPC UA server."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -6,8 +6,16 @@ An OT-aware authorization gateway that sits between an LLM agent and an industri
 
 [Русская версия →](README.ru.md)
 
-<!-- Ownership token for the official MCP Registry; it verifies this PyPI
-     package against server.json. Invisible when rendered. Do not remove. -->
+<!-- Ownership tokens for the official MCP Registry. It verifies a PyPI package
+     against server.json by looking for this string in the package description,
+     which is this file. Invisible when rendered. Do not remove.
+
+     Two of them on purpose. The registry searches by server NAME only
+     (substring match, per its OpenAPI spec) and does not index descriptions,
+     so the published name carries "opcua" to be findable at all. The bare
+     "otgate" entry is kept deprecated rather than deleted, and keeping its
+     token here means its status can still be managed. -->
+<!-- mcp-name: io.github.alikup-ai/otgate-opcua -->
 <!-- mcp-name: io.github.alikup-ai/otgate -->
 
 <p align="center">
@@ -138,6 +146,10 @@ audit log
 ```
 
 ## Run as an MCP server
+
+> Published to the official MCP Registry as **`io.github.alikup-ai/otgate-opcua`**, and to PyPI as **`otgate`**.
+> The registry name carries `opcua` because its search matches on the server name only and does not index
+> descriptions, so a bare `otgate` is findable only by someone who already knows the word.
 
 otgate exposes: `read_tag`, `write_tag`, `browse`, `get_audit_log`, and the
 operator approval tools `list_pending`, `approve`, `deny`.
