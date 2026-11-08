@@ -13,6 +13,11 @@ without changing code (the key architectural requirement in the spec):
     OTGATE_SHADOW         "1"/"true" to enable shadow mode (default: off)
     OTGATE_RATE_HISTORY   path to persist rate history (default: in-memory)
     OTGATE_OPCUA_ENDPOINT endpoint URL, required when backend == "asyncua"
+    OTGATE_TREND          "opcua" to enable recorded-history rate checks
+                          (needs the 'history' extra); default: off
+    OTGATE_TREND_ENDPOINT historian endpoint; defaults to OTGATE_OPCUA_ENDPOINT.
+                          A historian is often a different server from the one
+                          holding the live tags, so this is separate on purpose.
 
 Two transports are provided:
 
@@ -43,6 +48,7 @@ from otgate.gateway import Gateway
 from otgate.models import Scalar
 from otgate.policy import load_policy
 from otgate.rate_history import JsonlRateHistory
+from otgate.trend import ProcessTrend
 
 _DEFAULT_POLICY = Path(__file__).resolve().parent.parent / "examples" / "reactor_policy.yaml"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -61,13 +67,43 @@ def _build_backend_from_env():
     return build_backend(backend_kind)
 
 
+def _build_trend_from_env() -> ProcessTrend | None:
+    """Construct the historian from ``OTGATE_TREND``, or None when unset.
+
+    Only ``opcua`` exists today, because OPC UA Historical Access is the one
+    historian ottrend can talk to without vendor access. PI and Ignition land
+    here as additional kinds when their ottrend adapters do.
+    """
+    kind = os.environ.get("OTGATE_TREND", "").strip().lower()
+    if not kind:
+        return None
+    if kind != "opcua":
+        raise RuntimeError(
+            f"unknown OTGATE_TREND={kind!r} (supported: opcua)"
+        )
+    endpoint = (
+        os.environ.get("OTGATE_TREND_ENDPOINT")
+        or os.environ.get("OTGATE_OPCUA_ENDPOINT")
+    )
+    if not endpoint:
+        raise RuntimeError(
+            "OTGATE_TREND=opcua requires OTGATE_TREND_ENDPOINT "
+            "(or OTGATE_OPCUA_ENDPOINT, if the historian is the same server)"
+        )
+    from otgate.trend import OpcUaHistorian
+
+    return OpcUaHistorian(endpoint)
+
+
 def _shared_resources_from_env():
-    """Build the resources every gateway shares: backend, audit, rate history, approvals.
+    """Build the resources every gateway shares: backend, audit, rate history,
+    approvals and the historian.
 
     In multi-agent mode all agents talk to the *same* backend, write to the
     *same* audit log, share one rate-history (rate limits are per tag, not per
-    agent) and one approval store (so an operator sees every agent's pending
-    requests).
+    agent), one approval store (so an operator sees every agent's pending
+    requests) and one historian (what a tag has been doing is a fact about the
+    plant, not about an agent).
     """
     from otgate.approval import ApprovalStore
 
@@ -77,17 +113,19 @@ def _shared_resources_from_env():
     rate_history_path = os.environ.get("OTGATE_RATE_HISTORY")
     rate_history = JsonlRateHistory(rate_history_path) if rate_history_path else None
     approvals = ApprovalStore()
-    return backend, audit, shadow, rate_history, approvals
+    trend = _build_trend_from_env()
+    return backend, audit, shadow, rate_history, approvals, trend
 
 
 def _build_gateway_from_env() -> Gateway:
     """Construct a single-agent :class:`Gateway` from environment configuration."""
     policy_path = os.environ.get("OTGATE_POLICY") or str(_DEFAULT_POLICY)
-    backend, audit, shadow, rate_history, approvals = _shared_resources_from_env()
+    backend, audit, shadow, rate_history, approvals, trend = _shared_resources_from_env()
     policy = load_policy(policy_path)
     return Gateway(
         policy, backend, audit,
         shadow=shadow, rate_history=rate_history, approvals=approvals,
+        trend=trend,
     )
 
 
@@ -105,14 +143,14 @@ def _build_agent_gateways_from_env() -> dict[str, Gateway]:
         raise RuntimeError("multi-agent mode requires OTGATE_AGENTS to be set")
 
     agent_configs = load_agents(agents_path)
-    backend, audit, shadow, rate_history, approvals = _shared_resources_from_env()
+    backend, audit, shadow, rate_history, approvals, trend = _shared_resources_from_env()
 
     gateways: dict[str, Gateway] = {}
     for cfg in agent_configs:
         gateways[cfg.id] = Gateway(
             cfg.policy, backend, audit,
             shadow=shadow, rate_history=rate_history, approvals=approvals,
-            agent_id=cfg.id,
+            agent_id=cfg.id, trend=trend,
         )
     return gateways
 
@@ -253,10 +291,20 @@ def _uvicorn_server(app, host: str, port: int):
     return uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info"))
 
 
-async def _serve(servers) -> None:
+async def _serve(servers, gateways=()) -> None:
+    """Serve until shutdown, then release each gateway's async resources.
+
+    The historian holds a connection, and closing it has to happen inside the
+    loop that opened it — which is why teardown lives here rather than in the
+    synchronous ``finally`` that closes the audit log.
+    """
     import asyncio
 
-    await asyncio.gather(*(s.serve() for s in servers))
+    try:
+        await asyncio.gather(*(s.serve() for s in servers))
+    finally:
+        for gw in gateways:
+            await gw.aclose()
 
 
 def main_http() -> None:
@@ -315,10 +363,13 @@ def _run_single_agent(host: str, agent_port: int, operator_port: int, operator_t
     print(f"otgate operator channel : http://{host}:{operator_port}/mcp")
     try:
         asyncio.run(
-            _serve([
-                _uvicorn_server(agent_app, host, agent_port),
-                _uvicorn_server(operator_app, host, operator_port),
-            ])
+            _serve(
+                [
+                    _uvicorn_server(agent_app, host, agent_port),
+                    _uvicorn_server(operator_app, host, operator_port),
+                ],
+                gateways=[gateway],
+            )
         )
     finally:
         gateway.close()
@@ -369,7 +420,7 @@ def _run_multiagent(host: str, base_agent_port: int, operator_port: int, operato
     print(f"otgate operator channel : http://{host}:{operator_port}/mcp")
 
     try:
-        asyncio.run(_serve(servers))
+        asyncio.run(_serve(servers, gateways=list(gateways.values())))
     finally:
         for gw in gateways.values():
             gw.close()

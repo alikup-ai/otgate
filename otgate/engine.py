@@ -13,6 +13,8 @@ Write check order (first failing check wins):
 3. value_range violated            -> DENY
 4. any interlock fires             -> DENY
 5. max_rate exceeded (per step)    -> DENY
+5b. the tag's own recorded rate is already over max_rate -> DENY
+    (only when the rule sets ``history_rate`` and a historian is configured)
 6. cumulative_range exceeded       -> DENY  (series of steps, salami attacks)
 7. max_calls exhausted             -> DENY  (call storms)
 8. access == write_with_approval   -> ASK
@@ -27,6 +29,16 @@ the live value is what makes the check hold when something other than otgate
 moves the tag (an operator at the HMI, a cascade controller, the PLC program,
 another agent). A tag that cannot be read fails closed, exactly like an
 unverifiable interlock.
+
+Both of those baselines are *points*, and that is their limit: they say nothing
+about what the tag did between them. A tag ramped hard on the HMI and put back
+before the next write looks untouched to both. Step 5b closes that by asking a
+historian how fast the tag has actually been moving over the rate interval and
+holding *the process* to the same limit — the only check whose evidence comes
+from outside the gateway entirely. It is opt-in per tag (``history_rate``),
+costs a round trip, and can only ever *refuse* a write: the recorded rate is a
+lower bound on the truth, so "too fast" is definitive while "slow enough" is
+not. See :mod:`otgate.trend`.
 
 Cumulative drift deliberately differs: it bounds **the series otgate itself let
 through**, because that is a question about the agent, not about the process.
@@ -52,6 +64,7 @@ from otgate.models import (
     Scalar,
 )
 from otgate.rate_history import InMemoryRateHistory, RateHistory, WriteRecord
+from otgate.trend import HistoryUnavailable, ProcessTrend
 
 
 class PolicyEngine:
@@ -69,6 +82,14 @@ class PolicyEngine:
             non-persistent :class:`~otgate.rate_history.InMemoryRateHistory`;
             pass a :class:`~otgate.rate_history.JsonlRateHistory` to make the
             rate limit durable across restarts.
+        trend: a historian (see :mod:`otgate.trend`), required if any rule in
+            the policy sets ``history_rate``.
+
+    Raises:
+        ValueError: if the policy asks for recorded-history rate checks and no
+            historian was given. Discovering that at startup is the point: a
+            check that silently does not run is a policy weaker than the
+            operator who wrote it believes.
     """
 
     def __init__(
@@ -77,11 +98,23 @@ class PolicyEngine:
         backend: Backend,
         clock=time.time,
         history: RateHistory | None = None,
+        trend: ProcessTrend | None = None,
     ) -> None:
         self._policy = policy
         self._backend = backend
         self._clock = clock
         self._history: RateHistory = history or InMemoryRateHistory()
+        self._trend = trend
+        if trend is None:
+            asking = sorted(
+                tag for tag, rule in policy.rules.items() if rule.history_rate
+            )
+            if asking:
+                raise ValueError(
+                    "policy sets history_rate on "
+                    f"{', '.join(asking)} but no historian is configured; "
+                    "pass trend= (see otgate.trend) or remove history_rate"
+                )
 
     async def evaluate(self, action: Action) -> Decision:
         """Return the :class:`~otgate.models.Decision` for ``action``."""
@@ -223,14 +256,20 @@ class PolicyEngine:
         delta wins — the live value is the truth about the process, the recorded
         write is the truth about what otgate commanded, and a safety gate should
         answer to whichever is worse.
+
+        Both are still only points in time. When the rule opts into
+        ``history_rate``, a tag that passes this check then faces
+        :meth:`_check_recorded_rate`, which asks a historian what happened
+        *between* them.
         """
         if rule.max_rate is None or rule.rate_interval is None:
             return None
         if isinstance(value, bool):
             return None  # rate is meaningless for booleans
 
-        # Live baseline. A tag that cannot be read cannot be rate-checked, and
-        # an unverifiable safety condition fails closed — same rule as interlocks.
+        # Live baseline, read once and shared with the recorded-history check. A
+        # tag that cannot be read cannot be rate-checked, and an unverifiable
+        # safety condition fails closed — same rule as interlocks.
         try:
             live = await self._backend.read(rule.tag)
         except KeyError:
@@ -244,6 +283,17 @@ class PolicyEngine:
                 f"tag {rule.tag} could not be read for the rate check "
                 "(backend unreachable, failing closed)",
             )
+
+        step = self._check_step_rate(rule, value, live)
+        if step is not None:
+            return step
+        return await self._check_recorded_rate(rule)
+
+    def _check_step_rate(
+        self, rule: Rule, value: Scalar, live: Scalar
+    ) -> Decision | None:
+        """The per-step rate verdict. No I/O: ``live`` is already in hand."""
+        assert rule.max_rate is not None and rule.rate_interval is not None
 
         # A boolean on a rate-limited numeric tag is a misconfiguration, not a
         # baseline: fall back to history rather than coercing True to 1.0.
@@ -300,6 +350,76 @@ class PolicyEngine:
                 DecisionType.DENY,
                 f"rate of change too high: |{value} - {baseline}| = {delta:g} "
                 f"in {dt:.3g}s exceeds {rule.max_rate:g} per {rule.rate_interval:g}s",
+            )
+        return None
+
+    async def _check_recorded_rate(self, rule: Rule) -> Decision | None:
+        """Hold the *process* to the rate limit, not just this write.
+
+        One question goes to the historian: over the last ``rate_interval``,
+        how fast has this tag been moving? The answer is a rate in the same
+        units the policy is written in, so it is compared directly against
+        ``max_rate`` — a rate limit judged against a measured rate, with no
+        unit mixing and no second round trip.
+
+        If the process is already moving faster than its limit, this write is
+        refused. Note what that does *not* say: it does not accuse the write.
+        The tag is outside its rate envelope right now, something other than
+        otgate put it there, and a gateway whose job is to keep a process
+        inside an envelope does not add to a move that has already left it.
+        The denial lifts by itself once the fast movement ages out of the
+        window.
+
+        **Known limit, deliberately not papered over.** This compares one rate
+        against one limit; it does not pool a shared budget across actors. An
+        operator using 4 of a "5 per 60 s" allowance and an agent then adding
+        3 is two legal rates and one illegal total, and this check permits it.
+        Summing them would need movement in units and a rate in units/time to
+        be added together, which is not a quantity. ``cumulative_range`` is
+        the existing answer for series effects.
+
+        Everything the historian cannot answer fails closed, exactly like an
+        unverifiable interlock. A tag with *nothing* on record in the window is
+        the one exception: that is an answer ("no recorded movement"), not a
+        failure, and it leaves the verdict to the other checks.
+        """
+        if not rule.history_rate:
+            return None
+        assert rule.max_rate is not None and rule.rate_interval is not None
+        bucket = rule.history_bucket_seconds
+        assert bucket is not None  # rate_interval is set, so this is defaulted
+        source = rule.history_source
+
+        if self._trend is None:
+            # The constructor refuses this combination, so reaching here means
+            # an engine assembled some other way. Still fail closed: a rule
+            # that asks to be checked against history must never pass
+            # unchecked.
+            return Decision(
+                DecisionType.DENY,
+                f"tag {source} requires a recorded-history rate check but no "
+                "historian is configured (failing closed)",
+            )
+
+        try:
+            observed = await self._trend.observed_movement(
+                source, window=rule.rate_interval, bucket=bucket
+            )
+        except HistoryUnavailable as exc:
+            return Decision(
+                DecisionType.DENY,
+                f"tag {source} could not be checked against recorded history "
+                f"({exc}) (failing closed)",
+            )
+
+        if observed.rate_per_interval > rule.max_rate:
+            return Decision(
+                DecisionType.DENY,
+                f"the process itself is moving too fast: {source} moved "
+                f"{observed.describe} per {rule.rate_interval:g}s in the "
+                f"plant's own history, over the limit of {rule.max_rate:g} per "
+                f"{rule.rate_interval:g}s — refusing to add to a move otgate "
+                "did not make",
             )
         return None
 

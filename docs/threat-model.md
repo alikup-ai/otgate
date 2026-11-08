@@ -24,15 +24,19 @@ This is the risk otgate was built for. The agent is authorised to call
 conditions, and what its writes add up to**. Identity and access controls do not
 see any of that — they only answer "may this agent call this tool at all".
 
-Checks come in two kinds. Per-step limits (`value_range`, `max_rate`,
+Checks come in three kinds. Per-step limits (`value_range`, `max_rate`,
 `interlocks`) judge a single write. Cumulative limits (`cumulative_range`,
 `max_calls`) judge a *series*, which is what stops an agent from slicing a
-forbidden move into individually legal pieces.
+forbidden move into individually legal pieces. And one check judges the
+*process*: `history_rate` reads the tag's own recorded movement from a
+historian, which is the only evidence that comes from outside the gateway —
+and therefore the only check that sees a move otgate was never part of.
 
 | ASI02 sub-mechanism | Mechanism in otgate | Proof |
 |---|---|---|
 | **Parameter pollution** — arguments pushed beyond the intended scope | `value_range` on the tag; the write is evaluated against the *value*, not just the tool name | `tests/test_engine.py::test_write_out_of_range_denied`, `test_write_below_range_denied` |
 | **Excessive execution / harmful scale** — legitimate tool invoked at damaging frequency | `max_rate` + `rate_interval`, measured against the tag's **live value** (so the limit holds even when an operator, a cascade controller or another agent moved the tag outside otgate) and against the last write otgate let through, whichever is worse; an unreadable baseline fails closed | `tests/test_engine.py::test_max_rate_exceeded_denied`, `tests/test_rate_live_baseline.py::test_stale_baseline_cannot_be_used_to_smuggle_a_jump`, `tests/test_rate_history.py::test_rate_limit_survives_restart` |
+| **Movement the gateway never saw** — the tag was ramped outside otgate and put back between two of its checks, so both of its baselines read as calm | `history_rate`: the tag's own recorded rate over `rate_interval` is read from a historian (via [ottrend](https://github.com/alikup-ai/ottrend)) and held to the same limit. Opt-in per tag; anything the historian cannot answer fails closed | `tests/test_trend_rate.py::test_a_ramp_that_came_and_went_is_now_visible`, `tests/test_trend_ottrend.py::test_the_operator_ramp_is_refused_through_real_ottrend` |
 | **Unsafe use given system state** — the call is fine in isolation, unsafe right now | `interlocks`: the engine reads the current state of a guard tag (e.g. emergency shutdown) before allowing the write | `tests/test_engine.py::test_interlock_active_denied` |
 | **Unverifiable safety condition** | If the interlock tag cannot be read, the write is **denied** rather than allowed (fail closed) | `tests/test_failclosed.py::test_unverifiable_interlock_fails_closed` |
 | **Writes to tools never intended for the agent** | Deny-by-default: any tag absent from the policy is refused | `tests/test_engine.py::test_write_tag_not_in_policy_denied` |

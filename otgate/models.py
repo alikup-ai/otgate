@@ -78,6 +78,11 @@ class Rule:
     ``cumulative_range`` and ``max_calls`` constrain a *series* of writes, which
     is what catches salami attacks: many individually legal steps that add up to
     something the per-step limits would never have allowed.
+
+    ``history_rate`` widens ``max_rate`` from "how far is this write from the
+    two points otgate knows about" to "what has this tag actually been doing",
+    by asking a historian. That is the one check whose evidence comes from
+    outside the gateway entirely.
     """
 
     tag: str
@@ -94,6 +99,38 @@ class Rule:
     # Ceiling on how many writes may be executed within calls_interval seconds.
     max_calls: int | None = None
     calls_interval: float | None = None  # seconds; required when max_calls is set
+    # Judge max_rate against the tag's own recorded history as well as against
+    # the live value, so movement that happened outside the gateway and is
+    # already over counts against the limit. Requires max_rate, a configured
+    # historian, and a round trip per write — hence opt-in per tag. See
+    # :mod:`otgate.trend`.
+    history_rate: bool = False
+    # The historian's address for this tag, when it differs from the OPC UA
+    # node id: an OPC UA HA NodeId string, a PI point path, an Ignition tag
+    # path. Defaults to ``tag``.
+    history_tag: str | None = None
+    # Bucket size (seconds) the recorded rate is computed at. No historian
+    # computes a derivative, so the rate is emulated from bucketed ranges and
+    # the answer is only as sharp as the bucket. Defaults to rate_interval/10.
+    history_bucket: float | None = None
+
+    @property
+    def history_source(self) -> str:
+        """The tag to ask the historian about."""
+        return self.history_tag or self.tag
+
+    @property
+    def history_bucket_seconds(self) -> float | None:
+        """Bucket to measure the recorded rate at, defaulted from the interval.
+
+        A tenth of the interval: fine enough that a step inside the window is
+        not averaged away, coarse enough to keep the response small. ottrend
+        reports the bucket it used alongside every answer, so an operator
+        reading a denial can see how sharp the number was.
+        """
+        if self.rate_interval is None:
+            return None
+        return self.history_bucket or self.rate_interval / 10.0
 
 
 @dataclass(frozen=True)
