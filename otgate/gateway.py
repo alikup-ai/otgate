@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from otgate.audit import AuditLog
-from otgate.backends.base import Backend, BackendError
+from otgate.backends.base import Backend, BackendError, BackendPolicyDenied
 from otgate.engine import PolicyEngine
 from otgate.models import (
     Action,
@@ -204,13 +204,16 @@ class Gateway:
         )
         if recheck.type is DecisionType.DENY:
             reason = f"approved but blocked on re-check: {recheck.reason}"
-            self._approvals.mark(request_id, ApprovalStatus.DENIED, reason)
+            decision = DecisionType.ERROR if recheck.retryable else DecisionType.DENY
+            if not recheck.retryable:
+                self._approvals.mark(request_id, ApprovalStatus.DENIED, reason)
             self._audit.record(
                 action="write", node_id=request.node_id, value=request.value,
-                decision=Decision(DecisionType.DENY, reason),
+                decision=Decision(decision, reason),
                 shadow=self._shadow, executed=False, agent=request.agent_id,
             )
-            return ApprovalResult(status="DENIED", executed=False, reason=reason)
+            status = "ERROR" if decision is DecisionType.ERROR else ApprovalStatus.DENIED.value
+            return ApprovalResult(status=status, executed=False, reason=reason)
 
         # Passed re-check (ALLOW, or ASK again which approval satisfies): execute.
         # Attribute the write to the agent that requested it, not the operator.
@@ -220,6 +223,9 @@ class Gateway:
             Decision(DecisionType.ALLOW, "approved by human"),
             agent=request.agent_id,
         )
+        if outcome.type is DecisionType.DENY:
+            self._approvals.mark(request_id, ApprovalStatus.DENIED, outcome.reason)
+            return ApprovalResult(status="DENIED", executed=False, reason=outcome.reason)
         if outcome.type is DecisionType.ERROR:
             # Backend was unreachable while executing the approved write. Leave
             # the request PENDING so the operator can retry once it recovers.
@@ -288,8 +294,9 @@ class Gateway:
         """Execute an approved/allowed write (respecting shadow mode); audit it.
 
         Returns ``(outcome, executed)``. ``outcome`` is the decision to report:
-        the original ALLOW, or an ERROR if the backend was unreachable (fail
-        closed). ``executed`` is True only if the write actually hit the backend.
+        the original ALLOW, a DENY for an explicit backend policy refusal, or
+        an ERROR for other backend failures. ``executed`` is True only when
+        the backend reports a successful write.
         Shared by the direct ALLOW path and the approval path so they behave
         identically. ``agent`` is the identity to attribute in the audit — the
         requesting agent, even when an operator triggers execution via approval.
@@ -308,6 +315,9 @@ class Gateway:
                 # Feed the executed write back into the engine's rate history.
                 self._engine.record_write(node_id, value)
                 executed = True
+            except BackendPolicyDenied as exc:
+                outcome = Decision(DecisionType.DENY, f"backend policy denied write: {exc}")
+                audit_decision = outcome
             except (BackendError, KeyError) as exc:
                 outcome = Decision(DecisionType.ERROR, f"backend write failed: {exc}")
                 audit_decision = outcome

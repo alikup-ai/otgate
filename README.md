@@ -328,8 +328,9 @@ outage into a silent success:
   `executed: false`.
 - A write whose **interlock cannot be read** is **denied** — otgate will not run
   a write it could not safety-check.
-- A parked write **approved** during an outage is not executed; it stays pending
-  (or is denied on the fail-closed re-check) so the operator can retry.
+- A transient backend error during an approval re-check or dispatch leaves
+  the request pending for the operator to retry. A confirmed policy refusal
+  from the backend resolves it as denied.
 
 The real OPC UA backend **auto-reconnects**: a dropped connection triggers a
 bounded retry-with-backoff and one operation retry before giving up with a

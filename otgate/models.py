@@ -131,6 +131,7 @@ class Decision:
 
     type: DecisionType
     reason: str
+    retryable: bool = False  # a live policy check was blocked by backend availability
 
     @property
     def allowed(self) -> bool:

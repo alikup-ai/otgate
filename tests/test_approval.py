@@ -12,6 +12,7 @@ import pytest
 
 from otgate.approval import ApprovalStatus, ApprovalStore
 from otgate.audit import AuditLog
+from otgate.backends.base import BackendError, BackendPolicyDenied
 from otgate.backends.fake import FakeBackend
 from otgate.gateway import Gateway
 from otgate.models import DecisionType
@@ -133,6 +134,52 @@ async def test_double_resolution_is_rejected(gw):
     second = await gw.approve(result.approval_id)  # already resolved
     assert second.executed is False
     assert "already resolved" in second.reason
+
+
+async def test_backend_policy_denial_resolves_approval(gw, monkeypatch):
+    pending = await gw.write(SP, 60.0)
+    attempts = []
+
+    async def refuse(node_id, value):
+        attempts.append((node_id, value))
+        raise BackendPolicyDenied("bridge allowlist excludes this node")
+
+    monkeypatch.setattr(gw._backend, "write", refuse)
+    result = await gw.approve(pending.approval_id)
+    assert result.status == "DENIED"
+    assert result.executed is False
+    assert "bridge allowlist" in result.reason
+    assert gw.pending_approvals() == []
+    assert gw.audit_tail()[-1]["decision"] == "DENY"
+    assert gw.audit_tail()[-1]["executed"] is False
+
+    repeated = await gw.approve(pending.approval_id)
+    assert repeated.status == "DENIED"
+    assert repeated.executed is False
+    assert attempts == [(SP, 60.0)]
+    assert await gw._backend.read(SP) == 55.0
+
+
+async def test_transient_dispatch_error_leaves_approval_pending_for_retry(gw, monkeypatch):
+    pending = await gw.write(SP, 60.0)
+
+    async def disconnected(node_id, value):
+        raise BackendError("connection unavailable before dispatch")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(gw._backend, "write", disconnected)
+        result = await gw.approve(pending.approval_id)
+    assert result.status == "ERROR"
+    assert result.executed is False
+    assert [request["id"] for request in gw.pending_approvals()] == [pending.approval_id]
+    assert gw.audit_tail()[-1]["decision"] == "ERROR"
+    assert await gw._backend.read(SP) == 55.0
+
+    retried = await gw.approve(pending.approval_id)
+    assert retried.status == "APPROVED"
+    assert retried.executed is True
+    assert gw.pending_approvals() == []
+    assert await gw._backend.read(SP) == 60.0
 
 
 async def test_deny_unknown_id(gw):

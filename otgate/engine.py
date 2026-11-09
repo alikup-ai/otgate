@@ -196,6 +196,7 @@ class PolicyEngine:
                     DecisionType.DENY,
                     f"interlock tag {interlock.tag} could not be read "
                     "(backend unreachable, failing closed)",
+                    retryable=True,
                 )
             if _condition_holds(current, interlock.operator, interlock.threshold):
                 return Decision(
@@ -243,6 +244,7 @@ class PolicyEngine:
                 DecisionType.DENY,
                 f"tag {rule.tag} could not be read for the rate check "
                 "(backend unreachable, failing closed)",
+                retryable=True,
             )
 
         # A boolean on a rate-limited numeric tag is a misconfiguration, not a
@@ -360,6 +362,7 @@ class PolicyEngine:
                         DecisionType.DENY,
                         f"tag {rule.tag} could not be read for the cumulative "
                         "drift check (backend unreachable, failing closed)",
+                        retryable=True,
                     )
                 if isinstance(live, bool):
                     # A boolean on a tag carrying a numeric drift allowance is a

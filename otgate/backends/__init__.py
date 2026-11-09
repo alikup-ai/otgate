@@ -7,10 +7,10 @@ simulator (:class:`~otgate.backends.fake.FakeBackend`) or a real OPC UA server
 (:class:`~otgate.backends.asyncua_backend.AsyncuaBackend`), switched by config.
 """
 
-from otgate.backends.base import Backend, BackendError
+from otgate.backends.base import Backend, BackendError, BackendPolicyDenied
 from otgate.backends.fake import FakeBackend
 
-__all__ = ["Backend", "BackendError", "FakeBackend", "build_backend"]
+__all__ = ["Backend", "BackendError", "BackendPolicyDenied", "FakeBackend", "build_backend"]
 
 
 def build_backend(kind: str, **kwargs) -> Backend:
