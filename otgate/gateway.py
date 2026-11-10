@@ -128,6 +128,14 @@ class Gateway:
             try:
                 value = await self._backend.read(node_id)
                 executed = True
+            except BackendPolicyDenied as exc:
+                # A refusal under the backend's own policy is a decision, not
+                # a malfunction. Reporting it as ERROR would file a deliberate
+                # denial in the audit next to dropped connections.
+                decision = Decision(
+                    DecisionType.DENY,
+                    f"backend policy denied read: {exc}",
+                )
             except (BackendError, KeyError) as exc:
                 decision = Decision(
                     DecisionType.ERROR,

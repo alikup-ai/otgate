@@ -4,6 +4,10 @@ When the backend is unreachable, otgate must fail closed: reads and writes yield
 an ERROR outcome (never a silent success), the failure is audited, an
 unverifiable interlock blocks the write, and the health endpoint reports the
 outage.
+
+A backend that *refuses* rather than fails is the other half of this file. It
+must also fail closed, but it is not an outage and must not be reported as
+one — see the second half.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from otgate.audit import AuditLog
-from otgate.backends.base import BackendError
+from otgate.backends.base import BackendError, BackendPolicyDenied
 from otgate.backends.fake import FakeBackend
 from otgate.gateway import Gateway
 from otgate.models import Access, DecisionType, Policy, Rule
@@ -152,3 +156,129 @@ def test_health_endpoint_open_and_reports_status(tmp_path):
             assert client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 401
     finally:
         gw.close()
+
+
+# --- a backend that refuses, rather than fails ----------------------------
+# otgate may sit behind a bridge that holds a policy of its own — an OPCUA-MCP
+# worker on an operator profile, say — and such a bridge answers "no" for tags
+# outside its allowlist instead of attempting them. Every check that reads the
+# process has to survive that: a refused read is still an unverifiable safety
+# condition, so the write is denied. What it must not do is look like an
+# outage, because an outage says "try again" and a refusal will say the same
+# thing forever.
+
+
+class AllowlistBackend(FakeBackend):
+    """A backend that refuses some tags under its own policy, before I/O."""
+
+    def __init__(self, excluded: set[str], tags=None) -> None:
+        super().__init__(tags)
+        self.excluded = excluded
+
+    async def read(self, node_id):
+        self._refuse(node_id)
+        return await super().read(node_id)
+
+    async def write(self, node_id, value):
+        self._refuse(node_id)
+        return await super().write(node_id, value)
+
+    def _refuse(self, node_id: str) -> None:
+        if node_id in self.excluded:
+            raise BackendPolicyDenied(f"{node_id} is outside the bridge allowlist")
+
+
+def gateway_with(backend, tmp_path, policy=None):
+    return Gateway(
+        policy or load_policy(POLICY_PATH), backend, AuditLog(tmp_path / "a.jsonl")
+    )
+
+
+async def test_a_refused_interlock_read_denies_the_write(tmp_path):
+    """The guard tag is the one the bridge excludes: deny, and do not retry."""
+    g = gateway_with(AllowlistBackend({ESD}), tmp_path)
+    try:
+        result = await g.write(SP, 60.0)
+    finally:
+        g.close()
+
+    assert result.decision.type is DecisionType.DENY
+    assert result.executed is False
+    assert "refused by the backend" in result.decision.reason
+    assert result.decision.retryable is False
+    assert await AllowlistBackend({ESD}).read(SP) == 55.0, "nothing was written"
+
+
+async def test_a_refused_rate_baseline_read_denies_the_write(tmp_path):
+    """The written tag itself is excluded, so its live baseline is refused."""
+    g = gateway_with(AllowlistBackend({SP}), tmp_path)
+    try:
+        result = await g.write(SP, 60.0)
+    finally:
+        g.close()
+
+    assert result.decision.type is DecisionType.DENY
+    assert "rate check" in result.decision.reason
+    assert result.decision.retryable is False
+
+
+async def test_a_refused_cumulative_baseline_read_denies_the_write(tmp_path):
+    """No write history yet, so the drift window opens at the live value."""
+    policy = Policy(
+        rules={
+            SP: Rule(
+                tag=SP,
+                access=Access.WRITE,
+                cumulative_range=(-10.0, 10.0),
+                cumulative_interval=3600.0,
+            )
+        }
+    )
+    g = gateway_with(AllowlistBackend({SP}), tmp_path, policy=policy)
+    try:
+        result = await g.write(SP, 60.0)
+    finally:
+        g.close()
+
+    assert result.decision.type is DecisionType.DENY
+    assert "cumulative drift" in result.decision.reason
+    assert result.decision.retryable is False
+
+
+async def test_a_refused_read_is_denied_not_errored(tmp_path):
+    """A refusal filed as ERROR would sit in the audit beside dropped links."""
+    g = gateway_with(AllowlistBackend({PV}), tmp_path)
+    try:
+        result = await g.read(PV)
+    finally:
+        g.close()
+
+    assert result.decision.type is DecisionType.DENY
+    assert result.executed is False
+    assert "backend policy denied read" in result.decision.reason
+    assert g.audit_tail()[-1]["decision"] == "DENY"
+
+
+async def test_a_bridge_tightened_while_parked_resolves_the_approval(tmp_path):
+    """The whole chain: a refused re-check must not leave a request pending.
+
+    An approval parked under one bridge profile, and the guard tag dropped
+    from the allowlist before the operator gets to it. The re-check cannot
+    read the interlock, so the write is refused — and because asking again
+    would be refused identically, the request resolves instead of waiting.
+    """
+    backend = AllowlistBackend(set())
+    g = gateway_with(backend, tmp_path)
+    try:
+        parked = await g.write(SP, 60.0)
+        assert parked.decision.type is DecisionType.ASK
+
+        backend.excluded.add(ESD)
+        result = await g.approve(parked.approval_id)
+
+        assert result.status == "DENIED"
+        assert result.executed is False
+        assert g.pending_approvals() == []
+        assert await backend.read(SP) == 55.0
+    finally:
+        g.close()
