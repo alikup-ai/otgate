@@ -57,9 +57,39 @@ class HistoryUnavailable(RuntimeError):
 
     Every reason lands here: unreachable, no such tag, cannot express the
     query, or too little good data in the window to answer honestly. The
-    engine treats it the way it treats an unverifiable interlock — deny — so
-    the distinctions matter for the message, not for the verdict.
+    engine treats all of them the way it treats an unverifiable interlock —
+    deny — but the verdict is not the whole answer. A write parked for
+    approval also needs to know whether an operator should wait and try
+    again or be told no, and that does turn on which reason it was.
+
+    ``retryable`` carries exactly that: True when asking again could
+    plausibly answer differently (the historian was unreachable, or the
+    window held too little good data to judge), False when the reason lives
+    in the configuration — no such tag, a query the adapter cannot express —
+    and so will still be there on the next attempt.
+
+    It defaults to False: an implementation that knows a retry can help says
+    so, and a :class:`ProcessTrend` from somewhere else gives no grounds to
+    assume it.
     """
+
+    def __init__(self, *args: object, retryable: bool = False) -> None:
+        super().__init__(*args)
+        self.retryable = retryable
+
+
+def _worth_retrying(exc: Exception) -> bool:
+    """Whether asking ottrend again could plausibly answer differently.
+
+    Decided by naming the configuration errors rather than the transport
+    ones, so an ottrend failure this adapter has not met before counts as
+    worth retrying. The cost of guessing wrong is lopsided: a request left
+    pending is noise in the operator's queue, while one resolved DENIED by
+    mistake takes a legitimate write down with it.
+    """
+    from ottrend import UnknownTag, UnsupportedQuery
+
+    return not isinstance(exc, (UnknownTag, UnsupportedQuery))
 
 
 @dataclass(frozen=True)
@@ -110,7 +140,8 @@ class ProcessTrend(Protocol):
         """Largest movement of ``tag`` recorded in the last ``window`` seconds.
 
         Raises:
-            HistoryUnavailable: the historian could not answer.
+            HistoryUnavailable: the historian could not answer. Its
+                ``retryable`` says whether asking again might.
         """
         ...
 
@@ -179,8 +210,10 @@ class OttrendTrend:
             # UnknownTag (a history_tag that does not exist) and
             # UnsupportedQuery (a historian that cannot aggregate) are both
             # configuration problems, and both have to fail closed rather than
-            # quietly disable the check.
-            raise HistoryUnavailable(f"{type(exc).__name__}: {exc}") from exc
+            # quietly disable the check. Neither improves on a retry.
+            raise HistoryUnavailable(
+                f"{type(exc).__name__}: {exc}", retryable=_worth_retrying(exc)
+            ) from exc
 
         return ObservedMovement(
             rate_per_interval=result.per(span),
@@ -202,13 +235,16 @@ class OttrendTrend:
         try:
             samples = await self._provider.raw(tag, start, now, limit=1)
         except TrendError as probe_exc:
+            # The probe failed too, so the historian itself is the problem.
             raise HistoryUnavailable(
-                f"{type(probe_exc).__name__}: {probe_exc}"
+                f"{type(probe_exc).__name__}: {probe_exc}",
+                retryable=_worth_retrying(probe_exc),
             ) from probe_exc
         if samples:
             # There is data; ottrend still refused it. That is a quality
-            # refusal, and it stands.
-            raise HistoryUnavailable(str(exc)) from exc
+            # refusal, and it stands — but a window too thin to judge now can
+            # hold enough good data later, so it is worth another ask.
+            raise HistoryUnavailable(str(exc), retryable=_worth_retrying(exc)) from exc
         return ObservedMovement(
             rate_per_interval=0.0,
             bucket=bucket,
