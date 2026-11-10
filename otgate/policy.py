@@ -91,6 +91,9 @@ _ALLOWED_RULE_KEYS = {
     "cumulative_interval",
     "max_calls",
     "calls_interval",
+    "history_rate",
+    "history_tag",
+    "history_bucket",
 }
 _ALLOWED_INTERLOCK_KEYS = {"tag", "condition", "action"}
 
@@ -133,6 +136,14 @@ def _parse_rule(item: object, index: int) -> Rule:
     max_calls, calls_interval = _parse_max_calls(
         item.get("max_calls"), item.get("calls_interval"), where
     )
+    history_rate, history_tag, history_bucket = _parse_history(
+        item.get("history_rate"),
+        item.get("history_tag"),
+        item.get("history_bucket"),
+        max_rate,
+        rate_interval,
+        where,
+    )
 
     return Rule(
         tag=tag,
@@ -145,6 +156,9 @@ def _parse_rule(item: object, index: int) -> Rule:
         max_calls=max_calls,
         calls_interval=calls_interval,
         interlocks=interlocks,
+        history_rate=history_rate,
+        history_tag=history_tag,
+        history_bucket=history_bucket,
     )
 
 
@@ -265,6 +279,69 @@ def _parse_max_calls(
         raise PolicyError(f"{where}: 'calls_interval' must be positive, got {interval}")
 
     return int(max_calls_raw), interval
+
+
+def _parse_history(
+    history_rate_raw: object,
+    history_tag_raw: object,
+    history_bucket_raw: object,
+    max_rate: float | None,
+    rate_interval: float | None,
+    where: str,
+) -> tuple[bool, str | None, float | None]:
+    """Parse ``history_rate`` / ``history_tag`` / ``history_bucket``.
+
+    The check judges ``max_rate`` against the tag's recorded movement, so it
+    is meaningless without ``max_rate`` — and a key that silently has no
+    effect is how a policy ends up weaker than its author believes. Anything
+    set without the check enabled is therefore an error, not a shrug.
+    """
+    history_tag: str | None = None
+    if history_tag_raw is not None:
+        if not isinstance(history_tag_raw, str) or not history_tag_raw.strip():
+            raise PolicyError(f"{where}: 'history_tag' must be a non-empty string")
+        history_tag = history_tag_raw.strip()
+
+    history_bucket: float | None = None
+    if history_bucket_raw is not None:
+        if isinstance(history_bucket_raw, bool) or not _is_number(history_bucket_raw):
+            raise PolicyError(f"{where}: 'history_bucket' must be a number")
+        history_bucket = float(history_bucket_raw)
+        if history_bucket <= 0:
+            raise PolicyError(
+                f"{where}: 'history_bucket' must be positive, got {history_bucket}"
+            )
+
+    if history_rate_raw is None:
+        history_rate = False
+    elif isinstance(history_rate_raw, bool):
+        history_rate = history_rate_raw
+    else:
+        raise PolicyError(
+            f"{where}: 'history_rate' must be true or false, got {history_rate_raw!r}"
+        )
+
+    if not history_rate:
+        for key, value in (("history_tag", history_tag), ("history_bucket", history_bucket)):
+            if value is not None:
+                raise PolicyError(
+                    f"{where}: '{key}' set without 'history_rate: true' (has no effect)"
+                )
+        return False, None, None
+
+    if max_rate is None or rate_interval is None:
+        raise PolicyError(
+            f"{where}: 'history_rate' requires 'max_rate' and 'rate_interval' — "
+            "it is the same limit, measured against what the historian recorded"
+        )
+    if history_bucket is not None and history_bucket > rate_interval:
+        raise PolicyError(
+            f"{where}: 'history_bucket' ({history_bucket:g}s) must not exceed "
+            f"'rate_interval' ({rate_interval:g}s), or the window holds less "
+            "than one bucket and nothing can be measured"
+        )
+
+    return True, history_tag, history_bucket
 
 
 def _parse_interlocks(raw: object, where: str) -> tuple[Interlock, ...]:

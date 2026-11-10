@@ -1,0 +1,59 @@
+# The reactor policy with the recorded-history rate check turned on.
+#
+# Identical to reactor_policy.yaml except for the three `history_*` keys on the
+# setpoint. Kept separate because the check needs a historian: a gateway started
+# with this policy and no historian configured refuses to start, by design — a
+# safety check that silently does not run is worse than one that is absent.
+#
+# Run the scenario it exists for with:
+#
+#     python examples/history_demo.py
+#
+# and in production with:
+#
+#     OTGATE_TREND=opcua OTGATE_TREND_ENDPOINT=opc.tcp://historian:4840/ \
+#     OTGATE_POLICY=examples/reactor_policy_history.yaml otgate-http
+
+- tag: "ns=2;s=Reactor.TIC101.PV"
+  access: read
+
+# Reactor temperature — setpoint.
+#
+# `max_rate` on its own bounds how far *this write* moves the tag, measured
+# against the live value and against the last write otgate let through. Both are
+# points in time, so a ramp that happened and ended between them is invisible:
+# an operator moving the setpoint 50 -> 194 -> 50 on the HMI inside a minute
+# leaves no trace in either baseline.
+#
+# `history_rate: true` adds the plant's own record to the evidence. otgate asks
+# the historian how fast this tag has actually been moving over `rate_interval`
+# and holds the *process* to the same limit — so while the tag is outside its
+# rate envelope, the gateway will not add to a move it did not make. The denial
+# clears by itself once the movement ages out of the window.
+- tag: "ns=2;s=Reactor.TIC101.SP"
+  access: write_with_approval
+  value_range: [40, 80]
+  max_rate: 5
+  rate_interval: 60
+  history_rate: true
+  # The historian addresses the same physical tag its own way. Drop this key
+  # when the historian and the live server use the same node id.
+  history_tag: "ns=2;s=Reactor.TIC101.SP"
+  # No historian computes a rate of change, so ottrend emulates it from bucketed
+  # ranges and the answer is only as sharp as the bucket. Defaults to
+  # rate_interval/10; 6 s here is that default made explicit.
+  history_bucket: 6
+  cumulative_range: [-10, 10]
+  cumulative_interval: 3600
+  max_calls: 20
+  calls_interval: 3600
+  interlocks:
+    - tag: "ns=2;s=Reactor.ESD"
+      condition: "== true"
+      action: deny
+
+- tag: "ns=2;s=Reactor.PIC201.PV"
+  access: read
+
+- tag: "ns=2;s=Reactor.ESD"
+  access: read

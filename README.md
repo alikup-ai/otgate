@@ -91,6 +91,7 @@ poisoning, rogue-agent detection) — is in
 pip install -e .           # core: FakeBackend, engine, MCP server
 pip install -e ".[dev]"    # + pytest for the test suite
 pip install -e ".[opcua]"  # + asyncua for a real OPC UA backend
+pip install -e ".[history]" # + ottrend, for rate checks against a historian
 ```
 
 Python 3.11+.
@@ -119,7 +120,48 @@ A policy is a YAML list of per-tag rules. Any tag **not** listed is denied by de
 
 Access levels: `read`, `write`, `write_with_approval`, `deny`.
 
-Write check order (first failing check wins): tag-in-policy → access → value range → interlocks → rate of change → approval → allow.
+Write check order (first failing check wins): tag-in-policy → access → value range → interlocks → rate of change → recorded-history rate → cumulative drift → call budget → approval → allow.
+
+## Rate of change against the plant's own history
+
+`max_rate` on its own has two baselines: the tag's live value, read at check time, and the last write otgate let through. Both are **points in time**, and that is their limit — they say nothing about what the tag did in between.
+
+Which leaves this hole:
+
+> An operator ramps the setpoint 50 → 194 → 50 on the HMI, inside one rate interval. otgate wrote nothing, so it has no record. The live value reads 50 again. An agent's +2 nudge looks like a 2-unit step and passes a "no faster than 5 per 60 s" policy. **The process moved 144 units in that minute and the gateway never saw it.**
+
+Turn on `history_rate` and otgate asks a historian how fast the tag has *actually* been moving over `rate_interval`, then holds the process to the same limit:
+
+```yaml
+- tag: "ns=2;s=Reactor.TIC101.SP"
+  access: write
+  max_rate: 5
+  rate_interval: 60
+  history_rate: true                      # ask the historian, not just the live value
+  history_tag: "ns=2;s=Reactor.TIC101.SP" # optional: its address on the historian
+  history_bucket: 6                       # optional: measurement sharpness, default interval/10
+```
+
+```
+  without a historian        ALLOW write allowed
+  with a historian           DENY  the process itself is moving too fast: ns=2;s=Reactor.TIC101.SP
+                                   moved 1440 (fastest at 2026-11-08T09:40:19+00:00, bucket 6s,
+                                   100% good data) per 60s in the plant's own history, over the
+                                   limit of 5 per 60s — refusing to add to a move otgate did not make
+```
+
+Run it yourself: `pip install "otgate[history]" && python examples/history_demo.py`.
+
+Four things worth knowing before switching it on:
+
+- **It refuses; it never permits.** The recorded rate comes from [ottrend](https://github.com/alikup-ai/ottrend), and no historian computes a derivative — the rate is emulated from bucketed ranges, which makes every answer a *lower bound* on the truth. So "too fast" is definitive and sound to deny on, while "slow enough" only means nothing faster was visible at this bucket size in the data the historian kept. Every reason line names the bucket it used.
+- **The denial clears itself.** It bounds a rate over a moving window, so once the fast movement ages out, writes resume. There is nothing to reset and nothing to remember to switch back on.
+- **Everything unanswerable fails closed** — historian unreachable, `history_tag` that does not exist, a historian that cannot aggregate, or a window too thin on good-quality data. Same rule as an unverifiable interlock. The one exception is a window with *nothing* recorded: historians store on change, so a quiet tag is evidence of calm, not a broken historian, and the other checks decide.
+- **A policy that asks for it and gets no historian will not start.** A safety check that silently does not run is worse than one that is absent, so the mismatch surfaces at startup rather than per write.
+
+It is opt-in per tag because it costs round trips on the write path: two history reads normally, three when the window looks empty. One known gap it does *not* close: it compares one rate against one limit, it does not pool a shared budget across actors — an operator using 4 of a "5 per 60 s" allowance and an agent then adding 3 is two legal rates and one illegal total. `cumulative_range` is the existing answer for series effects.
+
+Deployment: set `OTGATE_TREND=opcua` and `OTGATE_TREND_ENDPOINT` (it falls back to `OTGATE_OPCUA_ENDPOINT`). The historian is a separate endpoint on purpose — it usually *is* a different server, always so for PI and Ignition. Programmatically, pass `trend=OttrendTrend(provider)` to `Gateway`, where `provider` is any ottrend provider.
 
 ## Demo
 
@@ -169,6 +211,8 @@ Configuration is via environment variables (so the backend switches without code
 | `OTGATE_SHADOW` | *(off)* | `1`/`true` to enable shadow mode |
 | `OTGATE_RATE_HISTORY` | *(in-memory)* | path to a JSONL file to make rate-of-change history **survive restarts** |
 | `OTGATE_OPCUA_ENDPOINT` | — | required when backend is `asyncua` |
+| `OTGATE_TREND` | *(off)* | `opcua` to enable `history_rate` checks (needs the `history` extra) |
+| `OTGATE_TREND_ENDPOINT` | `OTGATE_OPCUA_ENDPOINT` | the historian's endpoint — usually a different server |
 | `OTGATE_AGENT_TOKEN` | — | bearer token for the single-agent HTTP channel |
 | `OTGATE_AGENTS` | — | path to `agents.yaml` for multi-agent mode (overrides single-agent) |
 | `OTGATE_OPERATOR_TOKEN` | — | bearer token for the operator HTTP channel (must differ from every agent token) |
@@ -369,7 +413,9 @@ simulator over a real `opc.tcp://` connection:
   microseconds; `audit.record()` is ~0.03 ms (the file handle is kept open and
   flushed, not reopened per call). A rate-limited write costs one extra backend
   read to fetch the live baseline, and an interlocked write one read per guard
-  tag — deliberate safety round-trips.
+  tag — deliberate safety round-trips. A write to a tag with `history_rate` on
+  adds two historian reads (three when the window looks empty), which is why
+  that check is opt-in per tag rather than always on.
 
 This is comfortably fast for the intended use — an LLM/agent issuing setpoints on
 the scale of seconds. **otgate is not designed to sit inside a real-time control
@@ -383,6 +429,7 @@ survives a process crash) but not `fsync`'d per line — a stricter mode is a TO
 pytest -m "not integration"   # unit tests — no OPC UA dependency (the default promise)
 pytest -m integration         # end-to-end against a real asyncua server (needs the opcua extra)
 pytest -m asi02               # just the OWASP ASI02 evidence (see docs/threat-model.md)
+pytest -m history             # the recorded-history rate check driven by real ottrend
 pytest                         # everything
 ```
 
@@ -401,14 +448,14 @@ Honest limitations — these are deliberate cuts, not oversights:
 - **Scalars only.** Values are numbers or booleans; arrays/structs are not supported.
 - **Single client.** No multi-user access, queueing, or locking.
 - **Agent config is static.** Multiple agents, each with their own token, policy and audit identity, are supported via `agents.yaml`. But the set of agents is read at startup — there is no live add/revoke; changing it means a restart. Tokens are long-lived (no rotation/expiry).
-- **`max_rate` is wall-clock, and its time base is per-process.** The *baseline* is the tag's live value, read from the backend at check time, so the limit holds even when something other than otgate moves the tag. The *time base* still comes from otgate's own record of the last write it let through: with no record there is no measurable interval, so the write is bounded to one full `rate_interval` allowance rather than being rate-checked against elapsed time. Set `OTGATE_RATE_HISTORY` to a file path to keep that time base across restarts. otgate still does not read the historian trend, so it cannot see *how* the tag got to its current value.
+- **`max_rate` is wall-clock, and its time base is per-process.** The *baseline* is the tag's live value, read from the backend at check time, so the limit holds even when something other than otgate moves the tag. The *time base* still comes from otgate's own record of the last write it let through: with no record there is no measurable interval, so the write is bounded to one full `rate_interval` allowance rather than being rate-checked against elapsed time. Set `OTGATE_RATE_HISTORY` to a file path to keep that time base across restarts. What the tag did *between* those points is only visible with `history_rate` switched on (see above), which is opt-in per tag and needs a historian.
+- **No shared rate budget across actors.** `history_rate` compares one measured rate against one limit. An operator using 4 of a "5 per 60 s" allowance and an agent then adding 3 is two legal rates and one illegal total; `cumulative_range` bounds series effects, but only for the series otgate itself let through.
 - **No GUI.**
 
 ## Roadmap
 
 - Live agent management (add/revoke without restart, token rotation/expiry)
 - Time-window conditions (shifts, maintenance windows)
-- Historian-trend rate limits (the live-value baseline landed in v0.2; reading the actual trend is the remaining step)
 - Cross-tag budgets: a group of tags sharing one cumulative allowance, so an agent cannot spread its effect across several individually-compliant tags
 - More interlock actions beyond `deny`
 - High availability (otgate is single-instance today; a crash drops agent access until restart)

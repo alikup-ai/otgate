@@ -34,6 +34,33 @@ jobs:
       - name: Run unit tests (excluding integration)
         run: pytest -m "not integration" -q
 
+  # The recorded-history rate check against real ottrend. Separate from the unit
+  # job because it needs a historian stack, and separate from integration
+  # because it needs no OPC UA server: ottrend's MemoryTrend is its reference
+  # semantics, so the check can be driven end to end in memory.
+  #
+  # ottrend is installed from git until it is on PyPI. A direct URL cannot live
+  # in published package metadata, so the `history` extra names the release and
+  # CI pins the source.
+  history:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (dev + ottrend from git)
+        run: |
+          pip install -e ".[dev]"
+          pip install "ottrend @ git+https://github.com/alikup-ai/ottrend@main"
+      - name: Run the recorded-history rate checks
+        run: pytest -m history -q
+
   # Integration tests: exercise otgate against a real asyncua OPC UA server.
   integration:
     runs-on: ubuntu-latest

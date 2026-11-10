@@ -26,6 +26,7 @@ from otgate.models import (
 )
 from otgate.approval import ApprovalStatus, ApprovalStore
 from otgate.rate_history import RateHistory
+from otgate.trend import ProcessTrend
 
 
 @dataclass
@@ -71,6 +72,10 @@ class Gateway:
             in-memory history.
         approvals: store for parked ``write_with_approval`` requests. Defaults to
             a fresh :class:`~otgate.approval.ApprovalStore` with a 300 s TTL.
+        trend: a historian (see :mod:`otgate.trend`), required if any rule in
+            the policy sets ``history_rate``. Shared across gateways in
+            multi-agent mode, like the backend and the rate history: what a tag
+            has been doing is a fact about the plant, not about an agent.
     """
 
     def __init__(
@@ -83,12 +88,16 @@ class Gateway:
         rate_history: RateHistory | None = None,
         approvals: ApprovalStore | None = None,
         agent_id: str | None = None,
+        trend: ProcessTrend | None = None,
     ) -> None:
         self._policy = policy
         self._backend = backend
         self._audit = audit
         self._shadow = shadow
-        self._engine = PolicyEngine(policy, backend, history=rate_history)
+        self._engine = PolicyEngine(
+            policy, backend, history=rate_history, trend=trend
+        )
+        self._trend = trend
         self._approvals = approvals or ApprovalStore()
         self._agent_id = agent_id
 
@@ -324,5 +333,16 @@ class Gateway:
         return outcome, executed
 
     def close(self) -> None:
-        """Release resources (flush and close the audit log)."""
+        """Release synchronous resources (flush and close the audit log).
+
+        A configured historian holds a connection that can only be closed from
+        inside the event loop that opened it — use :meth:`aclose` when there is
+        one to await.
+        """
         self._audit.close()
+
+    async def aclose(self) -> None:
+        """Close everything, including the historian's session."""
+        if self._trend is not None:
+            await self._trend.close()
+        self.close()
