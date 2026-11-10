@@ -408,10 +408,14 @@ class PolicyEngine:
                 source, window=rule.rate_interval, bucket=bucket
             )
         except HistoryUnavailable as exc:
+            # Deny either way, but say whether asking again could help: an
+            # unreachable historian is worth a retry, a history_tag that does
+            # not exist is not. See :class:`~otgate.trend.HistoryUnavailable`.
             return Decision(
                 DecisionType.DENY,
                 f"tag {source} could not be checked against recorded history "
                 f"({exc}) (failing closed)",
+                retryable=exc.retryable,
             )
 
         if observed.rate_per_interval > rule.max_rate:
