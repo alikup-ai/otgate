@@ -24,14 +24,14 @@ import pytest
 
 pytest.importorskip("ottrend")
 
-from ottrend import MemoryTrend, Quality, Sample  # noqa: E402
+from ottrend import MemoryTrend, Quality, Sample, UnsupportedQuery  # noqa: E402
 
 from otgate.audit import AuditLog  # noqa: E402
 from otgate.backends.fake import FakeBackend  # noqa: E402
 from otgate.engine import PolicyEngine  # noqa: E402
 from otgate.gateway import Gateway  # noqa: E402
 from otgate.models import Access, Action, ActionType, DecisionType, Policy, Rule  # noqa: E402
-from otgate.trend import OttrendTrend  # noqa: E402
+from otgate.trend import HistoryUnavailable, OttrendTrend  # noqa: E402
 
 from conftest import ManualClock  # noqa: E402
 
@@ -171,6 +171,68 @@ async def test_a_history_tag_the_historian_does_not_have_fails_closed():
 
     assert decision.type is DecisionType.DENY
     assert "UnknownTag" in decision.reason
+
+
+# --- which refusals are worth asking again --------------------------------
+# All four deny the write. They differ in what an operator holding a parked
+# approval should be told: wait and try again, or no. A historian that was
+# unreachable or a window too thin to judge can answer differently in a
+# minute; a tag that does not exist and a query the adapter cannot express
+# cannot, and a request left pending on those two never resolves.
+
+
+class CannotAggregate(MemoryTrend):
+    """A historian that keeps samples but cannot bucket them."""
+
+    async def buckets(self, *args, **kwargs):
+        raise UnsupportedQuery("this historian cannot aggregate")
+
+
+async def ask(provider) -> HistoryUnavailable:
+    with pytest.raises(HistoryUnavailable) as caught:
+        await OttrendTrend(provider, clock=ManualClock(START)).observed_movement(
+            HIST, window=60.0, bucket=6.0
+        )
+    return caught.value
+
+
+async def test_an_unreachable_historian_is_worth_asking_again():
+    data = history(*OPERATOR_RAMP)
+    data.set_down(True)
+
+    assert (await ask(data)).retryable is True
+
+
+async def test_a_window_of_bad_data_is_worth_asking_again():
+    """Thin now, perhaps not in a minute: historians write on change."""
+    refusal = await ask(history(*OPERATOR_RAMP, quality=Quality.BAD))
+
+    assert refusal.retryable is True
+    assert "good data" in str(refusal)
+
+
+async def test_an_unknown_history_tag_is_not_worth_asking_again():
+    """A healthy historian asked for a tag it has never held: the reason is
+    the policy's ``history_tag``, so it will be identical next time."""
+    trend = OttrendTrend(history(*OPERATOR_RAMP), clock=ManualClock(START))
+
+    with pytest.raises(HistoryUnavailable) as caught:
+        await trend.observed_movement("ns=2;s=Nope", window=60.0, bucket=6.0)
+
+    assert caught.value.retryable is False
+    assert "UnknownTag" in str(caught.value)
+
+
+async def test_a_query_the_adapter_cannot_express_is_not_worth_asking_again():
+    refusal = await ask(CannotAggregate({HIST: [Sample(at(-30.0), 50.0, Quality.GOOD)]}))
+
+    assert refusal.retryable is False
+    assert "UnsupportedQuery" in str(refusal)
+
+
+def test_a_foreign_trend_implementation_defaults_to_no_retry():
+    """Only an implementation that knows a retry helps may claim it."""
+    assert HistoryUnavailable("some other historian").retryable is False
 
 
 # --- the bucket is the sharpness ------------------------------------------
