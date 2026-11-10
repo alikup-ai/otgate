@@ -375,6 +375,13 @@ outage into a silent success:
 - A transient backend error during an approval re-check or dispatch leaves
   the request pending for the operator to retry. A confirmed policy refusal
   from the backend resolves it as denied.
+- A backend that **refuses a read under its own policy** — a bridge whose
+  allowlist excludes a guard tag, say — also denies the write, because the
+  safety condition is still unverified. It is reported as a denial rather
+  than an error, and never as retryable: an outage invites another attempt,
+  a refusal would answer the same way forever. `BackendPolicyDenied` is part
+  of the `Backend` contract for exactly this; the bundled OPC UA and fake
+  backends never raise it, a bridge in front of them does.
 
 The real OPC UA backend **auto-reconnects**: a dropped connection triggers a
 bounded retry-with-backoff and one operation retry before giving up with a

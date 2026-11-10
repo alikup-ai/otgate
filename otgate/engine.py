@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import time
 
-from otgate.backends.base import Backend, BackendError
+from otgate.backends.base import Backend, BackendError, BackendPolicyDenied
 from otgate.models import (
     Access,
     Action,
@@ -222,6 +222,15 @@ class PolicyEngine:
                     DecisionType.DENY,
                     f"interlock tag {interlock.tag} is unavailable (failing closed)",
                 )
+            except BackendPolicyDenied as exc:
+                # The backend refused the read under its own policy — a bridge
+                # whose allowlist excludes this interlock tag, typically. A
+                # decision, not an outage, so it does not improve on a retry.
+                return Decision(
+                    DecisionType.DENY,
+                    f"interlock tag {interlock.tag} was refused by the backend "
+                    f"({exc}), so it could not be checked (failing closed)",
+                )
             except BackendError:
                 # Cannot verify the interlock because the backend is unreachable:
                 # fail closed rather than allow a write we could not safety-check.
@@ -277,6 +286,12 @@ class PolicyEngine:
             return Decision(
                 DecisionType.DENY,
                 f"tag {rule.tag} is unavailable for the rate check (failing closed)",
+            )
+        except BackendPolicyDenied as exc:
+            return Decision(
+                DecisionType.DENY,
+                f"tag {rule.tag} was refused by the backend ({exc}), so it "
+                "could not be read for the rate check (failing closed)",
             )
         except BackendError:
             return Decision(
@@ -408,10 +423,14 @@ class PolicyEngine:
                 source, window=rule.rate_interval, bucket=bucket
             )
         except HistoryUnavailable as exc:
+            # Deny either way, but say whether asking again could help: an
+            # unreachable historian is worth a retry, a history_tag that does
+            # not exist is not. See :class:`~otgate.trend.HistoryUnavailable`.
             return Decision(
                 DecisionType.DENY,
                 f"tag {source} could not be checked against recorded history "
                 f"({exc}) (failing closed)",
+                retryable=exc.retryable,
             )
 
         if observed.rate_per_interval > rule.max_rate:
@@ -476,6 +495,13 @@ class PolicyEngine:
                         DecisionType.DENY,
                         f"tag {rule.tag} is unavailable for the cumulative "
                         "drift check (failing closed)",
+                    )
+                except BackendPolicyDenied as exc:
+                    return Decision(
+                        DecisionType.DENY,
+                        f"tag {rule.tag} was refused by the backend ({exc}), "
+                        "so it could not be read for the cumulative drift "
+                        "check (failing closed)",
                     )
                 except BackendError:
                     return Decision(

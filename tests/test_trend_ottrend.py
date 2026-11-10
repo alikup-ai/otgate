@@ -150,6 +150,7 @@ async def test_a_window_of_bad_data_fails_closed():
     assert decision.type is DecisionType.DENY
     assert "could not be checked against recorded history" in decision.reason
     assert "good data" in decision.reason
+    assert decision.retryable is True, "the window can hold better data later"
 
 
 async def test_an_unreachable_historian_fails_closed():
@@ -161,6 +162,7 @@ async def test_an_unreachable_historian_fails_closed():
 
     assert decision.type is DecisionType.DENY
     assert "failing closed" in decision.reason
+    assert decision.retryable is True, "an operator may wait for the historian"
 
 
 async def test_a_history_tag_the_historian_does_not_have_fails_closed():
@@ -171,6 +173,7 @@ async def test_a_history_tag_the_historian_does_not_have_fails_closed():
 
     assert decision.type is DecisionType.DENY
     assert "UnknownTag" in decision.reason
+    assert decision.retryable is False, "the policy is wrong; waiting will not fix it"
 
 
 # --- which refusals are worth asking again --------------------------------
