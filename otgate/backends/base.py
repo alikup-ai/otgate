@@ -23,6 +23,10 @@ class BackendError(RuntimeError):
     transport level (as opposed to a missing tag, which is a ``KeyError``)."""
 
 
+class BackendPolicyDenied(RuntimeError):
+    """The backend explicitly refused a write before dispatch under its own policy."""
+
+
 class Backend(ABC):
     """Abstract OPC-UA-like backend.
 
@@ -55,6 +59,7 @@ class Backend(ABC):
         Raises:
             KeyError: if the node does not exist on the backend.
             BackendError: if the backend cannot be reached.
+            BackendPolicyDenied: if backend policy explicitly refused dispatch.
         """
 
     async def health(self) -> bool:

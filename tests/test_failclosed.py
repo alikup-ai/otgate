@@ -94,10 +94,18 @@ async def test_approve_during_outage_does_not_execute(gw):
     assert result.decision.type is DecisionType.ASK
     gw._backend.set_down(True)
     res = await gw.approve(result.approval_id)
-    # Either the interlock re-check fails closed (DENIED) or execution errors;
-    # in both cases nothing is written.
     assert res.executed is False
-    assert res.status in ("DENIED", "ERROR")
+    assert res.status == "ERROR"
+    assert "re-check" in res.reason
+    assert [request["id"] for request in gw.pending_approvals()] == [result.approval_id]
+    assert gw.audit_tail()[-1]["decision"] == "ERROR"
+
+    gw._backend.set_down(False)
+    assert await gw._backend.read(SP) == 55.0
+    retried = await gw.approve(result.approval_id)
+    assert retried.status == "APPROVED"
+    assert retried.executed is True
+    assert await gw._backend.read(SP) == 60.0
 
 
 # --- gateway health dict ---
